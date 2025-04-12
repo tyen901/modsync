@@ -1,9 +1,9 @@
 // Configuration Module
 
+use anyhow::{Context, Result, bail};
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use directories::ProjectDirs;
-use anyhow::{Context, Result, bail};
 
 // Configuration Struct
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -24,7 +24,8 @@ impl Default for Config {
 
 // Function to get the configuration file path
 pub fn get_config_path() -> Result<PathBuf> {
-    if let Some(proj_dirs) = ProjectDirs::from("com", "YourOrg", "ModSync") { // Replace YourOrg
+    if let Some(proj_dirs) = ProjectDirs::from("com", "YourOrg", "ModSync") {
+        // Replace YourOrg
         let config_dir = proj_dirs.config_dir();
         std::fs::create_dir_all(config_dir)?; // Ensure config directory exists
         Ok(config_dir.join("modsync.toml"))
@@ -49,8 +50,8 @@ pub fn load_config() -> Result<Config> {
 // Function to save configuration
 pub fn save_config(config: &Config) -> Result<()> {
     let config_path = get_config_path()?;
-    let config_str = toml::to_string_pretty(config)
-        .context("Failed to serialize config to TOML")?;
+    let config_str =
+        toml::to_string_pretty(config).context("Failed to serialize config to TOML")?;
     std::fs::write(&config_path, config_str)
         .with_context(|| format!("Failed to write config file: {:?}", config_path))
 }
@@ -58,8 +59,8 @@ pub fn save_config(config: &Config) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*; // Import items from parent module (config)
-    use tempfile::tempdir;
     use std::path::Path;
+    use tempfile::tempdir;
 
     // Mock ProjectDirs for testing
     struct MockProjectDirs {
@@ -102,7 +103,7 @@ mod tests {
 
         // Mock the load function to use the temp path
         let loaded_config: Config = {
-             if config_path.exists() {
+            if config_path.exists() {
                 let config_str = std::fs::read_to_string(&config_path)?;
                 toml::from_str(&config_str)?
             } else {
@@ -110,8 +111,14 @@ mod tests {
             }
         };
 
-        assert_eq!(original_config.remote_torrent_url, loaded_config.remote_torrent_url);
-        assert_eq!(original_config.local_download_path, loaded_config.local_download_path);
+        assert_eq!(
+            original_config.remote_torrent_url,
+            loaded_config.remote_torrent_url
+        );
+        assert_eq!(
+            original_config.local_download_path,
+            loaded_config.local_download_path
+        );
 
         dir.close()?;
         Ok(())
@@ -119,22 +126,25 @@ mod tests {
 
     #[test]
     fn test_load_default_config() -> Result<()> {
-         let dir = tempdir()?;
+        let dir = tempdir()?;
         // Don't create the file
-         let config_path = test_config_path(dir.path());
+        let config_path = test_config_path(dir.path());
 
         // Mock the load function
         let loaded_config = {
             if config_path.exists() {
-                 // ... (same as above, but won't run)
-                 unreachable!();
+                // ... (same as above, but won't run)
+                unreachable!();
             } else {
                 Config::default()
             }
         };
 
         assert_eq!(loaded_config.remote_torrent_url, "");
-        assert_eq!(loaded_config.local_download_path, PathBuf::from("./modsync_downloads"));
+        assert_eq!(
+            loaded_config.local_download_path,
+            PathBuf::from("./modsync_downloads")
+        );
 
         dir.close()?;
         Ok(())
@@ -144,4 +154,4 @@ mod tests {
     // is hard without mocking the `directories` crate or complex setup.
     // The tests above verify the core serialization/deserialization logic and default handling,
     // assuming the path generation works correctly.
-} 
+}

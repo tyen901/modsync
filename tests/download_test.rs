@@ -1,17 +1,15 @@
 // tests/download_test.rs
 
-use modsync::librqbit::{
-    AddTorrent, AddTorrentOptions, Session, SessionOptions,
-};
+use anyhow::Result;
+use modsync::librqbit::{AddTorrent, AddTorrentOptions, Session, SessionOptions};
+use sha2::{Digest, Sha256};
+use std::fs::{File, OpenOptions, create_dir_all};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tempfile::tempdir;
-use anyhow::Result;
 use tokio::time::{Duration, sleep};
 use walkdir::WalkDir;
-use sha2::{Sha256, Digest};
-use std::fs::{File, create_dir_all, OpenOptions};
-use std::io::{Read, Write, Seek, SeekFrom};
 
 const TEST_TORRENT_PATH: &str = "tests/data/test.torrent";
 const TEST_FOLDER_PATH: &str = "tests/data/test_folder";
@@ -49,57 +47,66 @@ fn copy_partial_file(src: &Path, dest: &Path, copy_percentage: f64) -> Result<()
     if let Some(parent) = dest.parent() {
         create_dir_all(parent)?;
     }
-    
+
     let src_meta = std::fs::metadata(src)?;
     let src_len = src_meta.len();
     let bytes_to_copy = (src_len as f64 * copy_percentage.clamp(0.0, 1.0)) as u64;
-    
+
     let mut reader = File::open(src)?;
     let mut writer = File::create(dest)?;
-    
+
     let mut buffer = vec![0; 8192]; // 8KB buffer
     let mut bytes_copied = 0;
-    
+
     while bytes_copied < bytes_to_copy {
         let bytes_remaining = (bytes_to_copy - bytes_copied) as usize;
         let to_read = std::cmp::min(buffer.len(), bytes_remaining);
-        
+
         let bytes_read = reader.read(&mut buffer[..to_read])?;
         if bytes_read == 0 {
             break; // EOF
         }
-        
+
         writer.write_all(&buffer[..bytes_read])?;
         bytes_copied += bytes_read as u64;
     }
-    
-    println!("Copied {}/{} bytes ({:.1}%) from {} to {}", 
-        bytes_copied, src_len, (bytes_copied as f64 / src_len as f64) * 100.0,
-        src.display(), dest.display());
-    
+
+    println!(
+        "Copied {}/{} bytes ({:.1}%) from {} to {}",
+        bytes_copied,
+        src_len,
+        (bytes_copied as f64 / src_len as f64) * 100.0,
+        src.display(),
+        dest.display()
+    );
+
     Ok(())
 }
 
 // Copy entire directory with option to copy files partially
 fn copy_directory(src_dir: &Path, dest_dir: &Path, file_copy_percentage: f64) -> Result<()> {
     create_dir_all(dest_dir)?;
-    
+
     for entry in WalkDir::new(src_dir) {
         let entry = entry?;
         let src_path = entry.path();
         let rel_path = src_path.strip_prefix(src_dir)?;
         let dest_path = dest_dir.join(rel_path);
-        
+
         if src_path.is_dir() {
             create_dir_all(&dest_path)?;
         } else if src_path.is_file() {
             copy_partial_file(src_path, &dest_path, file_copy_percentage)?;
         }
     }
-    
-    println!("Copied directory from {} to {} with {:.1}% of each file", 
-        src_dir.display(), dest_dir.display(), file_copy_percentage * 100.0);
-    
+
+    println!(
+        "Copied directory from {} to {} with {:.1}% of each file",
+        src_dir.display(),
+        dest_dir.display(),
+        file_copy_percentage * 100.0
+    );
+
     Ok(())
 }
 
@@ -108,34 +115,38 @@ fn corrupt_file(path: &Path, corruption_size: usize) -> Result<()> {
     let mut file = OpenOptions::new().read(true).write(true).open(path)?;
     let metadata = file.metadata()?;
     let file_size = metadata.len();
-    
+
     // Only corrupt if the file is big enough
     if file_size < 100 {
         println!("File too small to corrupt: {}", path.display());
         return Ok(());
     }
-    
+
     // Position at 25% into the file
     let position = file_size as u64 / 4;
     file.seek(SeekFrom::Start(position))?;
-    
+
     // Create a buffer of random data
     let mut corrupt_data = vec![0u8; corruption_size];
     for i in 0..corruption_size {
         corrupt_data[i] = (i % 256) as u8;
     }
-    
+
     // Write the corrupt data
     file.write_all(&corrupt_data)?;
-    println!("Corrupted {} bytes at position {} in {}", 
-        corruption_size, position, path.display());
-    
+    println!(
+        "Corrupted {} bytes at position {} in {}",
+        corruption_size,
+        position,
+        path.display()
+    );
+
     Ok(())
 }
 
 async fn run_download_test(output_dir: &Path, wait_duration: Duration) -> Result<Arc<Session>> {
     println!("Starting download test to: {:?}", output_dir);
-    
+
     let session = Session::new_with_opts(
         output_dir.to_path_buf(),
         SessionOptions {
@@ -146,32 +157,47 @@ async fn run_download_test(output_dir: &Path, wait_duration: Duration) -> Result
             listen_port_range: None, // Don't listen for incoming
             ..Default::default()
         },
-    ).await?;
+    )
+    .await?;
 
     println!("Session created successfully");
-    
+
     let torrent_bytes = std::fs::read(TEST_TORRENT_PATH)?;
     println!("Read torrent file of size: {} bytes", torrent_bytes.len());
 
     let mut opts = AddTorrentOptions::default();
     opts.overwrite = true; // Important for re-checking existing/partial files
 
-    let handle = session.add_torrent(
-        AddTorrent::from_bytes(torrent_bytes),
-        Some(opts),
-    ).await?.into_handle().expect("Failed to get torrent handle");
+    let handle = session
+        .add_torrent(AddTorrent::from_bytes(torrent_bytes), Some(opts))
+        .await?
+        .into_handle()
+        .expect("Failed to get torrent handle");
 
-    println!("Torrent added successfully, waiting for {:?} to check progress", wait_duration);
+    println!(
+        "Torrent added successfully, waiting for {:?} to check progress",
+        wait_duration
+    );
 
     // Wait for specified duration and check progress
     sleep(wait_duration).await;
-    
+
     // Print status information
     let stats = handle.stats();
-    println!("Progress: {:.2}%", stats.progress_bytes as f64 / stats.total_bytes as f64 * 100.0);
+    println!(
+        "Progress: {:.2}%",
+        stats.progress_bytes as f64 / stats.total_bytes as f64 * 100.0
+    );
     println!("Downloaded: {} bytes", stats.progress_bytes);
     println!("Uploaded: {} bytes", stats.uploaded_bytes);
-    println!("Download speed: {:.2} MiB/s", if let Some(live) = &stats.live { live.download_speed.mbps } else { 0.0 });
+    println!(
+        "Download speed: {:.2} MiB/s",
+        if let Some(live) = &stats.live {
+            live.download_speed.mbps
+        } else {
+            0.0
+        }
+    );
 
     Ok(session)
 }
@@ -189,13 +215,13 @@ async fn test_download_progress() -> Result<()> {
 #[tokio::test]
 async fn test_data_validation() -> Result<()> {
     let output_dir = tempdir()?;
-    
+
     // Run download for 60 seconds to get substantial portions of the files
     let _session = run_download_test(output_dir.path(), Duration::from_secs(60)).await?;
-    
+
     // Calculate hash of original test folder
     let original_hash = calculate_hash(Path::new(TEST_FOLDER_PATH))?;
-    
+
     // Verify the downloaded files exist in the output directory
     let output_test_folder = output_dir.path().join("test_folder");
     if !output_test_folder.exists() {
@@ -209,29 +235,32 @@ async fn test_data_validation() -> Result<()> {
                 found = true;
             }
         }
-        
+
         if !found {
-            anyhow::bail!("Could not find any downloaded directory in {:?}", output_dir.path());
+            anyhow::bail!(
+                "Could not find any downloaded directory in {:?}",
+                output_dir.path()
+            );
         }
     }
-    
+
     // Calculate hash of the downloaded content if found
     if output_test_folder.exists() {
         let downloaded_hash = calculate_hash(&output_test_folder)?;
         println!("Original hash: {}", original_hash);
         println!("Downloaded hash: {}", downloaded_hash);
     }
-    
+
     // Simply verify that files were downloaded, regardless of location
     let downloaded_files = WalkDir::new(output_dir.path())
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
         .count();
-    
+
     println!("Found {} files in output directory", downloaded_files);
     assert!(downloaded_files > 0, "No files were downloaded");
-    
+
     Ok(())
 }
 
@@ -240,16 +269,16 @@ async fn test_resume_partial_download() -> Result<()> {
     let output_dir = tempdir()?;
     // Use the test_folder structure in the output directory
     let test_output_dir = output_dir.path().join("test_folder");
-    
+
     // 1. Create output directory structure and copy partial files (50% of each file)
     copy_directory(
-        Path::new(TEST_FOLDER_PATH), 
+        Path::new(TEST_FOLDER_PATH),
         &test_output_dir,
-        0.5 // Copy 50% of each file
+        0.5, // Copy 50% of each file
     )?;
-    
+
     println!("Created partial files at {:?}", test_output_dir);
-    
+
     // Record initial file sizes for comparison
     let mut initial_sizes: Vec<(PathBuf, u64)> = Vec::new();
     for entry in WalkDir::new(&test_output_dir) {
@@ -262,27 +291,31 @@ async fn test_resume_partial_download() -> Result<()> {
             initial_sizes.push((path.clone(), size));
         }
     }
-    
+
     // 2. Run download test with the partial files already in place
     let _session = run_download_test(output_dir.path(), Duration::from_secs(60)).await?;
-    
+
     // 3. Compare file sizes after resumption
     let mut files_updated = false;
     for (path, initial_size) in &initial_sizes {
         if path.exists() {
             let new_size = std::fs::metadata(path)?.len();
-            println!("File '{}' size changed: {} -> {} bytes", 
-                path.display(), initial_size, new_size);
-            
+            println!(
+                "File '{}' size changed: {} -> {} bytes",
+                path.display(),
+                initial_size,
+                new_size
+            );
+
             if new_size > *initial_size {
                 files_updated = true;
             }
         }
     }
-    
+
     // 4. Verify at least one file was updated
     assert!(files_updated, "No files were updated during resume");
-    
+
     Ok(())
 }
 
@@ -291,16 +324,16 @@ async fn test_fix_corrupted_files() -> Result<()> {
     let output_dir = tempdir()?;
     // Use the test_folder structure in the output directory
     let test_output_dir = output_dir.path().join("test_folder");
-    
+
     // 1. Create test directory and copy all files (100%)
     copy_directory(
-        Path::new(TEST_FOLDER_PATH), 
+        Path::new(TEST_FOLDER_PATH),
         &test_output_dir,
-        1.0 // Copy 100% of each file
+        1.0, // Copy 100% of each file
     )?;
-    
+
     println!("Copied complete files to {:?}", test_output_dir);
-    
+
     // 2. Find the largest file to corrupt
     let mut largest_file: Option<(PathBuf, u64)> = None;
     for entry in WalkDir::new(&test_output_dir) {
@@ -309,37 +342,40 @@ async fn test_fix_corrupted_files() -> Result<()> {
             let path = entry.path().to_path_buf();
             let metadata = std::fs::metadata(&path)?;
             let size = metadata.len();
-            
-            if largest_file.as_ref().map_or(true, |(_, max_size)| size > *max_size) {
+
+            if largest_file
+                .as_ref()
+                .map_or(true, |(_, max_size)| size > *max_size)
+            {
                 largest_file = Some((path, size));
             }
         }
     }
-    
+
     // 3. Corrupt the file
     if let Some((path, size)) = largest_file {
         println!("Found largest file: {} ({} bytes)", path.display(), size);
         corrupt_file(&path, 1024)?; // Corrupt 1KB of data
-        
+
         // Get the current file size and hash before fixing
         let metadata_before = std::fs::metadata(&path)?;
         let size_before = metadata_before.len();
         let hash_before = calculate_hash(&path)?;
         println!("File size before fixing: {} bytes", size_before);
         println!("File hash before fixing: {}", hash_before);
-        
+
         // 4. Run the download to fix the corrupted file
         let _session = run_download_test(output_dir.path(), Duration::from_secs(60)).await?;
-        
+
         // 5. Check if the file was fixed
         if path.exists() {
             let metadata_after = std::fs::metadata(&path)?;
             let size_after = metadata_after.len();
             let hash_after = calculate_hash(&path)?;
-            
+
             println!("File size after fixing: {} bytes", size_after);
             println!("File hash after fixing: {}", hash_after);
-            
+
             // 6. Verify the file changed (file was fixed)
             assert_ne!(hash_before, hash_after, "Corrupted file was not fixed");
         } else {
@@ -348,6 +384,6 @@ async fn test_fix_corrupted_files() -> Result<()> {
     } else {
         anyhow::bail!("No files found to corrupt");
     }
-    
+
     Ok(())
-} 
+}

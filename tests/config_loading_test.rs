@@ -2,8 +2,8 @@
 
 // Use the crate name (modsync) to access public items
 use modsync::config::Config;
-use tempfile::tempdir;
 use std::path::PathBuf;
+use tempfile::tempdir;
 
 // Helper to create a temporary config file
 fn create_temp_config(dir: &tempfile::TempDir, content: &str) -> std::io::Result<PathBuf> {
@@ -21,8 +21,7 @@ fn test_load_valid_config_integration() {
     let test_path_str = "/tmp/valid_path";
     let config_content = format!(
         "remote_torrent_url = \"{}\"\nlocal_download_path = \"{}\"",
-        test_url,
-        test_path_str
+        test_url, test_path_str
     );
     let _ = create_temp_config(&dir, &config_content).unwrap();
 
@@ -32,10 +31,17 @@ fn test_load_valid_config_integration() {
 
     // For now, this test mainly serves as a placeholder structure.
     // Let's assert based on manually parsing the temp file content.
-    let config_path = dir.path().join(".config").join("modsync").join("modsync.toml");
+    let config_path = dir
+        .path()
+        .join(".config")
+        .join("modsync")
+        .join("modsync.toml");
     let config_str = std::fs::read_to_string(&config_path).unwrap();
     let loaded_config: Config = toml::from_str(&config_str).unwrap();
 
     assert_eq!(loaded_config.remote_torrent_url, test_url);
-    assert_eq!(loaded_config.local_download_path, PathBuf::from(test_path_str));
+    assert_eq!(
+        loaded_config.local_download_path,
+        PathBuf::from(test_path_str)
+    );
 }

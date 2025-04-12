@@ -1,13 +1,10 @@
 mod config;
 mod ui;
 
-use librqbit::{
-    Api,
-    Session,
-};
-use tokio::sync::mpsc;
 use anyhow::Context;
 use config::load_config;
+use librqbit::{Api, Session};
+use tokio::sync::mpsc;
 use ui::{MyApp, UiMessage};
 
 #[tokio::main]
@@ -36,7 +33,10 @@ async fn main() -> anyhow::Result<()> {
             let (tx, rx) = mpsc::unbounded_channel::<UiMessage>();
             // Pass initial config to MyApp
             // Clone initial_config as it's moved into the closure
-            Ok(Box::new(MyApp::new(api.clone(), tx, rx, initial_config.clone())) as Box<dyn eframe::App>)
+            Ok(
+                Box::new(MyApp::new(api.clone(), tx, rx, initial_config.clone()))
+                    as Box<dyn eframe::App>,
+            )
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {}", e))?;

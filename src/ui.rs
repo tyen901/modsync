@@ -3,7 +3,7 @@
 use crate::config::{self, Config}; // Import config module and Config struct
 use eframe::egui::{self, CentralPanel, ProgressBar};
 use librqbit::Api;
-use librqbit::api::{TorrentDetailsResponse, ApiTorrentListOpts};
+use librqbit::api::{ApiTorrentListOpts, TorrentDetailsResponse};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 
@@ -33,7 +33,10 @@ impl MyApp {
         initial_config: Config,
     ) -> Self {
         let config_edit_url = initial_config.remote_torrent_url.clone();
-        let config_edit_path_str = initial_config.local_download_path.to_string_lossy().into_owned();
+        let config_edit_path_str = initial_config
+            .local_download_path
+            .to_string_lossy()
+            .into_owned();
         Self {
             api,
             torrents: Vec::new(),
@@ -54,13 +57,22 @@ impl MyApp {
         tokio::spawn(async move {
             let opts = ApiTorrentListOpts { with_stats: true };
             let list_response = api_clone.api_torrent_list_ext(opts);
-            println!("Refreshed torrents: {} torrents found", list_response.torrents.len());
+            println!(
+                "Refreshed torrents: {} torrents found",
+                list_response.torrents.len()
+            );
 
-            let torrents_data: Vec<(usize, TorrentDetailsResponse, u64)> = list_response.torrents.into_iter()
+            let torrents_data: Vec<(usize, TorrentDetailsResponse, u64)> = list_response
+                .torrents
+                .into_iter()
                 .filter_map(|details| {
                     details.id.map(|id| {
-                        let total_size = details.files.as_ref()
-                            .map(|files| files.iter().filter(|f| f.included).map(|f| f.length).sum())
+                        let total_size = details
+                            .files
+                            .as_ref()
+                            .map(|files| {
+                                files.iter().filter(|f| f.included).map(|f| f.length).sum()
+                            })
                             .unwrap_or(0);
                         (id, details, total_size)
                     })
@@ -83,15 +95,16 @@ impl MyApp {
         }
         let new_path = PathBuf::from(self.config_edit_path_str.trim());
         if new_path.to_string_lossy().is_empty() {
-             println!("Error: Local path cannot be empty.");
-             // let _ = self.ui_tx.send(UiMessage::Error("Local path cannot be empty".to_string()));
+            println!("Error: Local path cannot be empty.");
+            // let _ = self.ui_tx.send(UiMessage::Error("Local path cannot be empty".to_string()));
             return;
         }
 
         self.config.remote_torrent_url = self.config_edit_url.trim().to_string();
         self.config.local_download_path = new_path;
 
-        match config::save_config(&self.config) { // Use config::save_config
+        match config::save_config(&self.config) {
+            // Use config::save_config
             Ok(_) => {
                 println!("Configuration saved successfully.");
                 // TODO: Trigger the sync process to start with the new config
@@ -101,7 +114,9 @@ impl MyApp {
             }
             Err(e) => {
                 eprintln!("Error saving configuration: {}", e);
-                let _ = self.ui_tx.send(UiMessage::Error(format!("Failed to save config: {}", e)));
+                let _ = self
+                    .ui_tx
+                    .send(UiMessage::Error(format!("Failed to save config: {}", e)));
             }
         }
     }
@@ -111,52 +126,62 @@ impl MyApp {
         println!("UI Request: Pause torrent {}", id);
         let api_clone = self.api.clone();
         let ui_tx_clone = self.ui_tx.clone();
-         tokio::spawn(async move {
-             match api_clone.api_torrent_action_pause(id.into()).await {
+        tokio::spawn(async move {
+            match api_clone.api_torrent_action_pause(id.into()).await {
                 Ok(_) => {
                     println!("Paused torrent {} successfully", id);
-                     let _ = ui_tx_clone.send(UiMessage::Error(format!("Torrent {} Paused", id)));
+                    let _ = ui_tx_clone.send(UiMessage::Error(format!("Torrent {} Paused", id)));
                 }
                 Err(e) => {
                     eprintln!("Error pausing torrent {}: {}", id, e);
-                    let _ = ui_tx_clone.send(UiMessage::Error(format!("Error pausing torrent {}: {}", id, e)));
+                    let _ = ui_tx_clone.send(UiMessage::Error(format!(
+                        "Error pausing torrent {}: {}",
+                        id, e
+                    )));
                 }
             }
         });
     }
-     fn start_torrent(&self, id: usize) {
+    fn start_torrent(&self, id: usize) {
         println!("UI Request: Start torrent {}", id);
-         let api_clone = self.api.clone();
+        let api_clone = self.api.clone();
         let ui_tx_clone = self.ui_tx.clone();
-         tokio::spawn(async move {
-             match api_clone.api_torrent_action_start(id.into()).await {
-                 Ok(_) => {
+        tokio::spawn(async move {
+            match api_clone.api_torrent_action_start(id.into()).await {
+                Ok(_) => {
                     println!("Started torrent {} successfully", id);
-                     let _ = ui_tx_clone.send(UiMessage::Error(format!("Torrent {} Started/Resumed", id)));
-                 }
+                    let _ = ui_tx_clone
+                        .send(UiMessage::Error(format!("Torrent {} Started/Resumed", id)));
+                }
                 Err(e) => {
-                     eprintln!("Error starting torrent {}: {}", id, e);
-                    let _ = ui_tx_clone.send(UiMessage::Error(format!("Error starting torrent {}: {}", id, e)));
-                 }
-             }
-         });
+                    eprintln!("Error starting torrent {}: {}", id, e);
+                    let _ = ui_tx_clone.send(UiMessage::Error(format!(
+                        "Error starting torrent {}: {}",
+                        id, e
+                    )));
+                }
+            }
+        });
     }
 
     fn cancel_torrent(&self, id: usize) {
         println!("UI Request: Cancel torrent {}", id);
-         let api_clone = self.api.clone();
+        let api_clone = self.api.clone();
         let ui_tx_clone = self.ui_tx.clone();
-         tokio::spawn(async move {
-             match api_clone.api_torrent_action_forget(id.into()).await {
+        tokio::spawn(async move {
+            match api_clone.api_torrent_action_forget(id.into()).await {
                 Ok(_) => {
                     println!("Forgot torrent {} successfully", id);
-                     let _ = ui_tx_clone.send(UiMessage::Error(format!("Torrent {} Forgotten", id)));
-                      // TODO: Refresh list or trigger sync check after forgetting?
+                    let _ = ui_tx_clone.send(UiMessage::Error(format!("Torrent {} Forgotten", id)));
+                    // TODO: Refresh list or trigger sync check after forgetting?
                 }
                 Err(e) => {
                     eprintln!("Error forgetting torrent {}: {}", id, e);
-                     let _ = ui_tx_clone.send(UiMessage::Error(format!("Error forgetting torrent {}: {}", id, e)));
-                 }
+                    let _ = ui_tx_clone.send(UiMessage::Error(format!(
+                        "Error forgetting torrent {}: {}",
+                        id, e
+                    )));
+                }
             }
         });
     }
@@ -171,7 +196,7 @@ impl eframe::App for MyApp {
                     println!("UI received updated torrent list");
                     self.torrents = torrents;
                 }
-                 UiMessage::TorrentAdded(id) => {
+                UiMessage::TorrentAdded(id) => {
                     println!("UI notified: Torrent {} added/managed", id);
                     // TODO: Update UI to reflect this, maybe trigger refresh?
                 }
@@ -201,8 +226,14 @@ impl eframe::App for MyApp {
             ui.separator();
             ui.heading("Synchronization Status");
 
-            ui.label(format!("Monitoring URL: {}", self.config.remote_torrent_url));
-            ui.label(format!("Target Path: {:?}", self.config.local_download_path));
+            ui.label(format!(
+                "Monitoring URL: {}",
+                self.config.remote_torrent_url
+            ));
+            ui.label(format!(
+                "Target Path: {:?}",
+                self.config.local_download_path
+            ));
             // TODO: Add more status indicators here based on sync progress
 
             ui.separator();
@@ -221,7 +252,10 @@ impl eframe::App for MyApp {
                             } else {
                                 0.0
                             };
-                            ui.add(ProgressBar::new(progress).text(format!("{:.1}%", progress * 100.0)));
+                            ui.add(
+                                ProgressBar::new(progress)
+                                    .text(format!("{:.1}%", progress * 100.0)),
+                            );
                             ui.label(format!("Status: {:?}", stats.state));
                             // TODO: Potentially show speeds, peers etc. from stats
                         } else {
@@ -245,4 +279,4 @@ impl eframe::App for MyApp {
 
         ctx.request_repaint();
     }
-} 
+}

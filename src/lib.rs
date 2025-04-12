@@ -5,4 +5,4 @@ pub mod config;
 pub mod ui;
 
 // Re-export librqbit for easier access in tests
-pub use librqbit; 
+pub use librqbit;
