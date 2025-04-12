@@ -352,38 +352,124 @@ async fn test_fix_corrupted_files() -> Result<()> {
         }
     }
 
-    // 3. Corrupt the file
+    // 3. Corrupt the file more significantly to ensure detection
     if let Some((path, size)) = largest_file {
         println!("Found largest file: {} ({} bytes)", path.display(), size);
-        corrupt_file(&path, 1024)?; // Corrupt 1KB of data
+        
+        // Create more substantial corruption at multiple positions
+        // This increases the chance that it affects multiple pieces in the torrent
+        let corruption_size = 4096; // Increase corruption size to 4KB
+        
+        // Corrupt the file at multiple positions
+        let positions = [
+            size / 10,          // At 10% 
+            size / 4,           // At 25%
+            size / 2,           // At 50%
+            (size * 3) / 4,     // At 75%
+        ];
+        
+        for pos in positions {
+            corrupt_file_at_position(&path, corruption_size, pos)?;
+        }
 
-        // Get the current file size and hash before fixing
-        let metadata_before = std::fs::metadata(&path)?;
-        let size_before = metadata_before.len();
+        // Get the current hash before fixing
         let hash_before = calculate_hash(&path)?;
-        println!("File size before fixing: {} bytes", size_before);
         println!("File hash before fixing: {}", hash_before);
 
-        // 4. Run the download to fix the corrupted file
-        let _session = run_download_test(output_dir.path(), Duration::from_secs(60)).await?;
+        // 4. Create a session with specific options to ensure verification
+        println!("Starting download to fix corrupted files");
+
+        let session = Session::new_with_opts(
+            output_dir.path().to_path_buf(),
+            SessionOptions {
+                disable_dht: true,
+                disable_dht_persistence: true,
+                fastresume: false, // Critical: Disable fastresume to force full verification
+                persistence: None,
+                listen_port_range: None,
+                ..Default::default()
+            },
+        ).await?;
+
+        let torrent_bytes = std::fs::read(TEST_TORRENT_PATH)?;
+        
+        // Configure options to force overwrite and verification
+        let mut opts = AddTorrentOptions::default();
+        opts.overwrite = true;   // Ensures we'll overwrite existing data if needed
+        // No force_verify option, but disabling fastresume in SessionOptions already
+        // forces full verification of all pieces
+
+        // Add the torrent to repair corrupted files
+        let add_response = session
+            .add_torrent(AddTorrent::from_bytes(torrent_bytes), Some(opts))
+            .await?;
+            
+        let handle = add_response.into_handle().expect("Failed to get torrent handle");
+        
+        // Wait a reasonable time for corruption to be detected and fixed
+        sleep(Duration::from_secs(60)).await;
+
+        // Check the status
+        let stats = handle.stats();
+        println!(
+            "Progress: {:.2}%, Downloaded: {} bytes",
+            stats.progress_bytes as f64 / stats.total_bytes as f64 * 100.0,
+            stats.progress_bytes
+        );
 
         // 5. Check if the file was fixed
         if path.exists() {
-            let metadata_after = std::fs::metadata(&path)?;
-            let size_after = metadata_after.len();
             let hash_after = calculate_hash(&path)?;
-
-            println!("File size after fixing: {} bytes", size_after);
             println!("File hash after fixing: {}", hash_after);
 
             // 6. Verify the file changed (file was fixed)
             assert_ne!(hash_before, hash_after, "Corrupted file was not fixed");
+            
+            // Additional verification: check that the file now matches the original
+            let original_path = Path::new(TEST_FOLDER_PATH).join(path.strip_prefix(&test_output_dir)?);
+            let original_hash = calculate_hash(&original_path)?;
+            println!("Original file hash: {}", original_hash);
+            
+            assert_eq!(original_hash, hash_after, "Fixed file doesn't match the original");
         } else {
             anyhow::bail!("File no longer exists after running the download test");
         }
     } else {
         anyhow::bail!("No files found to corrupt");
     }
+
+    Ok(())
+}
+
+// Add a function to corrupt a file at a specific position
+fn corrupt_file_at_position(path: &Path, corruption_size: usize, position: u64) -> Result<()> {
+    let mut file = OpenOptions::new().read(true).write(true).open(path)?;
+    let metadata = file.metadata()?;
+    let file_size = metadata.len();
+
+    // Only corrupt if the position is valid
+    if position >= file_size {
+        return Ok(());
+    }
+
+    // Position at the specified location
+    file.seek(SeekFrom::Start(position))?;
+
+    // Create a buffer of clearly invalid data
+    let mut corrupt_data = vec![0xFF; corruption_size]; // Use 0xFF for clear corruption
+    for i in 0..corruption_size {
+        // Create a pattern that's clearly different from the original
+        corrupt_data[i] = ((i % 128) + 128) as u8;
+    }
+
+    // Write the corrupt data
+    file.write_all(&corrupt_data)?;
+    println!(
+        "Corrupted {} bytes at position {} in {}",
+        corruption_size,
+        position,
+        path.display()
+    );
 
     Ok(())
 }
