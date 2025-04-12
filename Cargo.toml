@@ -1,0 +1,20 @@
+[package]
+name = "modsync"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.31.1"
+librqbit = "8.0.0"
+tokio = { version = "1.44.2", features = ["full"] }
+anyhow = "1.0.97"
+serde = { version = "1.0.219", features = ["derive"] }
+toml = "0.8.20"
+directories = "6.0.0"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+walkdir = "2"
+sha2 = "0.10"
+hex = "0.4"
