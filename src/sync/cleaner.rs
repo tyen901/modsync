@@ -83,6 +83,82 @@ pub fn get_expected_files_from_details(
     expected
 }
 
+/// Get expected files from raw torrent content
+/// This replaces the previous function that used Torrent struct
+pub fn get_expected_files_from_bytes(
+    torrent_bytes: &[u8],
+) -> Result<HashSet<PathBuf>> {
+    use anyhow::Context;
+    
+    // Use the librqbit API to add the torrent temporarily to get details
+    let mut expected = HashSet::new();
+    
+    // Create a temporary session to parse the torrent
+    let session = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            // We're in a Tokio runtime already
+            handle.block_on(async {
+                // Create a temporary in-memory session
+                librqbit::Session::new_with_opts(
+                    std::env::temp_dir(), // Use temp dir - we won't actually download
+                    librqbit::SessionOptions {
+                        disable_dht: true,
+                        disable_dht_persistence: true,
+                        persistence: None,
+                        ..Default::default()
+                    }
+                ).await
+            }).context("Failed to create temporary session")?
+        },
+        Err(_) => {
+            // Not in a Tokio runtime, can't parse torrent here
+            eprintln!("Cleaner: Cannot parse torrent bytes outside of tokio runtime");
+            return Ok(expected); // Return empty set
+        }
+    };
+    
+    // Create API
+    let api = librqbit::Api::new(session, None);
+    
+    // Add torrent (we'll forget it right after)
+    let add_request = librqbit::AddTorrent::from_bytes(torrent_bytes.to_vec());
+    let options = librqbit::AddTorrentOptions { 
+        paused: true,  // Don't start downloading
+        ..Default::default()
+    };
+    
+    let response = match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.block_on(async {
+                api.api_add_torrent(add_request, Some(options)).await
+            }).context("Failed to add torrent to temporary session")?
+        },
+        Err(_) => return Ok(expected),
+    };
+    
+    // Get the details
+    if let Some(id) = response.id {
+        let details = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                handle.block_on(async {
+                    let details = api.api_torrent_details(id.into()).context("Failed to get torrent details")?;
+                    
+                    // Clean up - forget the torrent right away
+                    let _ = api.api_torrent_action_forget(id.into()).await;
+                    
+                    Ok::<_, anyhow::Error>(details)
+                }).context("Failed to get torrent details")?
+            },
+            Err(_) => return Ok(expected),
+        };
+        
+        // Use our existing function to extract file paths
+        expected = get_expected_files_from_details(&details);
+    }
+    
+    Ok(expected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*; // Import functions from outer module

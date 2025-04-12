@@ -58,6 +58,9 @@ pub enum UiMessage {
     TriggerFolderVerify,            // UI -> Sync Task
     ExtraFilesFound(Vec<PathBuf>),  // Sync Task -> UI
     DeleteExtraFiles(Vec<PathBuf>), // UI -> Sync Task
+    // New variant for prompting about remote torrent updates
+    RemoteUpdateFound(Vec<u8>, String), // Torrent data and etag, Sync Task -> UI
+    ApplyRemoteUpdate(Vec<u8>, String), // Torrent data and etag, UI -> Sync Task
 }
 
 // Main function to draw the UI
@@ -71,6 +74,9 @@ pub fn draw_ui(app: &mut MyApp, ctx: &egui::Context) {
         
         // Draw the extra files prompt if needed
         draw_extra_files_prompt(ctx, ui, app);
+        
+        // Draw the remote update prompt if needed
+        draw_remote_update_prompt(ctx, ui, app);
     });
 }
 
@@ -125,6 +131,46 @@ fn draw_extra_files_prompt(ctx: &egui::Context, _ui: &mut egui::Ui, app: &mut My
     }
     if should_ignore {
         app.extra_files_to_prompt = None; // Now we can borrow mutably
+    }
+}
+
+/// Draw the prompt for a remote torrent update if one is available
+fn draw_remote_update_prompt(ctx: &egui::Context, _ui: &mut egui::Ui, app: &mut MyApp) {
+    let mut should_update = false;
+    let mut should_ignore = false;
+
+    if let Some(_) = &app.remote_update {
+        // Use a unique ID for the window
+        egui::Window::new("Remote Update Available")
+            .id(egui::Id::new("remote_update_prompt")) // Ensure unique ID
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label("A new version of the remote torrent is available.");
+                ui.label("Do you want to update your local copy?");
+                ui.label(RichText::new("Note: Files that are not part of the updated torrent will need to be reviewed.").italics().small());
+                
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Update").clicked() {
+                        // Defer the action by setting a flag
+                        should_update = true;
+                    }
+                    if ui.button("Ignore").clicked() {
+                        // Defer the action by setting a flag
+                        should_ignore = true;
+                    }
+                });
+            });
+    }
+
+    // Perform actions *after* the window and the immutable borrow have finished
+    if should_update {
+        actions::apply_remote_update(app); // Will implement this action
+    }
+    if should_ignore {
+        app.remote_update = None; // Clear the update prompt
     }
 }
 

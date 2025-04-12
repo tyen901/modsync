@@ -24,6 +24,8 @@ pub struct MyApp {
     pub(crate) sync_status: SyncStatus,     // Current status of the sync task
     pub(crate) extra_files_to_prompt: Option<Vec<PathBuf>>, // Files for delete prompt
     pub(crate) file_tree: crate::ui::torrent_file_tree::TorrentFileTree, // Add state for the file tree
+    // New fields for remote update detection
+    pub(crate) remote_update: Option<(Vec<u8>, String)>, // Torrent content and etag from remote update
 }
 
 impl MyApp {
@@ -55,6 +57,7 @@ impl MyApp {
             sync_status: SyncStatus::Idle, // Start in idle state
             extra_files_to_prompt: None, // Initialize prompt state
             file_tree: Default::default(), // Initialize file tree state
+            remote_update: None, // Initialize remote update state
         }
     }
 }
@@ -115,8 +118,15 @@ impl eframe::App for MyApp {
                     }
                     // Don't change overall sync status here, let the sync task manage it.
                 }
+                // Handle remote update found message
+                UiMessage::RemoteUpdateFound(torrent_data, etag) => {
+                    println!("UI received RemoteUpdateFound: {} bytes with etag: {}", torrent_data.len(), etag);
+                    self.remote_update = Some((torrent_data, etag));
+                    // Status remains unchanged, we'll prompt the user
+                }
                 // TriggerManualRefresh messages are meant for the sync manager, not the UI
-                UiMessage::TriggerManualRefresh | UiMessage::TriggerFolderVerify | UiMessage::DeleteExtraFiles(_) => {
+                UiMessage::TriggerManualRefresh | UiMessage::TriggerFolderVerify | 
+                UiMessage::DeleteExtraFiles(_) | UiMessage::ApplyRemoteUpdate(_, _) => {
                     // This shouldn't happen as these messages are sent directly to the sync manager
                     // But handle it just in case
                     println!("UI received Sync Manager Command - forwarding");

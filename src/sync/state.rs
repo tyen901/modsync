@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use crate::config::get_cached_torrent_path; // Import cache path helper
 
 // Import the cleaner functions
-use super::cleaner::{find_extra_files, get_expected_files_from_details};
+use super::cleaner::{find_extra_files, get_expected_files_from_details, get_expected_files_from_bytes};
 
 // Structure to hold the sync state
 #[derive(Debug, Default)]
@@ -81,7 +81,62 @@ pub async fn run_sync_manager(
                     UiMessage::DeleteExtraFiles(files_to_delete) => {
                         println!("Sync: Deletion requested for {} files", files_to_delete.len());
                         delete_files(&files_to_delete, &ui_tx).await;
-                    }
+                    },
+                    UiMessage::ApplyRemoteUpdate(torrent_content, etag) => {
+                        println!("Sync: Apply remote update requested (ETag: {})", etag);
+                        // Update the internal state with the new ETag
+                        state.last_known_etag = Some(etag);
+                        
+                        // Apply the update immediately (we'll check for extra files afterwards)
+                        send_sync_status(&ui_tx, SyncStatus::UpdatingTorrent);
+                        
+                        match apply_remote_update(&current_config, &mut state, &api, &ui_tx, torrent_content).await {
+                            true => {
+                                // If the update was successful and we have a torrent ID, check for extra files
+                                if let Some(id) = state.current_torrent_id {
+                                    // Now verify the local directory for any extra files
+                                    println!("Sync: Checking for extra files after update");
+                                    send_sync_status(&ui_tx, SyncStatus::CheckingLocal);
+                                    
+                                    match api.api_torrent_details(id.into()) {
+                                        Ok(details) => {
+                                            let expected_files_rel = get_expected_files_from_details(&details);
+                                            
+                                            if !current_config.download_path.as_os_str().is_empty() {
+                                                match find_extra_files(&current_config.download_path, &expected_files_rel) {
+                                                    Ok(extra_files) => {
+                                                        if !extra_files.is_empty() {
+                                                            println!("Sync: Found {} extra files after update", extra_files.len());
+                                                            if let Err(e) = ui_tx.send(UiMessage::ExtraFilesFound(extra_files)) {
+                                                                eprintln!("Sync: Failed to send ExtraFilesFound message: {}", e);
+                                                            }
+                                                        }
+                                                        send_sync_status(&ui_tx, SyncStatus::Idle);
+                                                    },
+                                                    Err(e) => {
+                                                        eprintln!("Sync: Error checking for extra files: {}", e);
+                                                        send_sync_status(&ui_tx, SyncStatus::Idle);
+                                                    }
+                                                }
+                                            } else {
+                                                send_sync_status(&ui_tx, SyncStatus::Idle);
+                                            }
+                                        },
+                                        Err(e) => {
+                                            eprintln!("Sync: Error getting torrent details: {}", e);
+                                            send_sync_status(&ui_tx, SyncStatus::Idle);
+                                        }
+                                    }
+                                } else {
+                                    send_sync_status(&ui_tx, SyncStatus::Idle);
+                                }
+                            },
+                            false => {
+                                // Apply failed, status already set by apply_remote_update
+                                println!("Sync: Update application failed");
+                            }
+                        }
+                    },
                     _ => {}
                 }
             }
@@ -93,21 +148,9 @@ pub async fn run_sync_manager(
                 
                 current_config = new_config;
                 
-                send_sync_status(&ui_tx, SyncStatus::UpdatingTorrent); // Indicate change
-                
-                println!("Sync: Resetting ETag and current Torrent ID due to config change.");
-                state.last_known_etag = None;
-                let old_torrent_id = state.current_torrent_id.take();
-
-                // Clear the UI display for the old torrent if it existed
-                if old_torrent_id.is_some() {
-                    println!("Sync: Sending None to UI to clear old torrent details.");
-                    let _ = ui_tx.send(UiMessage::UpdateManagedTorrent(None));
-                }
-                
-                // Explicitly trigger a refresh check after config change
-                println!("Sync: Triggering refresh after config update.");
-                perform_refresh(&current_config, &mut state, &api, &ui_tx, &http_client).await;
+                // We no longer trigger a refresh automatically on config change
+                println!("Sync: Configuration updated, waiting for manual refresh.");
+                send_sync_status(&ui_tx, SyncStatus::Idle);
             }
         }
     }
@@ -143,10 +186,7 @@ async fn perform_refresh(
         Ok(check_result) => {
             if check_result.needs_update {
                 println!("Sync: Remote torrent needs update. ETag: {:?}", check_result.etag);
-                send_sync_status(ui_tx, SyncStatus::UpdatingTorrent);
                 
-                state.last_known_etag = check_result.etag;
-
                 if let Some(torrent_content) = check_result.torrent_content {
                     // --- Save the new torrent content to cache --- 
                     match get_cached_torrent_path() {
@@ -162,31 +202,24 @@ async fn perform_refresh(
                     }
                     // -------------------------------------------
                     
-                    match super::torrent::manage_torrent_task(
-                        config,
-                        api,
-                        ui_tx,
-                        state.current_torrent_id, // Pass current ID to forget
-                        torrent_content, 
-                    ).await {
-                        Ok(new_id) => {
-                            println!("Sync: Torrent task managed successfully. New ID: {:?}", new_id);
-                            state.current_torrent_id = new_id;
-                                                        
-                            if let Some(id) = new_id {
-                                refresh_managed_torrent_status(api, ui_tx, id);
-                            }
-                            // Let status be updated by refresh or next cycle
-                        },
-                        Err(e) => {
-                            let err_msg = format!("Sync error managing torrent: {}", e);
+                    // Instead of applying the update immediately, send a prompt to the UI
+                    if let Some(etag) = check_result.etag {
+                        println!("Sync: Sending update prompt to UI with ETag: {}", etag);
+                        if let Err(e) = ui_tx.send(UiMessage::RemoteUpdateFound(torrent_content, etag)) {
+                            let err_msg = format!("Failed to send update prompt to UI: {}", e);
                             eprintln!("Sync: {}", err_msg);
-                            let _ = ui_tx.send(UiMessage::Error(err_msg.clone()));
                             send_sync_status(ui_tx, SyncStatus::Error(err_msg));
+                        } else {
+                            // Set to idle until user decides what to do
+                            send_sync_status(ui_tx, SyncStatus::Idle);
                         }
+                    } else {
+                        let err_msg = "Update needed but no ETag received".to_string();
+                        eprintln!("Sync: {}", err_msg);
+                        send_sync_status(ui_tx, SyncStatus::Error(err_msg));
                     }
                 } else {
-                    let err_msg = "Sync error: Update needed but no content received".to_string();
+                    let err_msg = "Update needed but no content received".to_string();
                     eprintln!("Sync: {}", err_msg);
                     let _ = ui_tx.send(UiMessage::Error(err_msg.clone()));
                     send_sync_status(ui_tx, SyncStatus::Error(err_msg));
@@ -319,6 +352,44 @@ fn refresh_managed_torrent_status(
             let err_msg = format!("Failed to get torrent stats: {}", e);
             send_sync_status(tx, SyncStatus::Error(err_msg.clone()));
             let _ = tx.send(UiMessage::Error(err_msg));
+        }
+    }
+}
+
+// New function to apply a remote update
+async fn apply_remote_update(
+    config: &AppConfig,
+    state: &mut SyncState,
+    api: &librqbit::Api,
+    ui_tx: &mpsc::UnboundedSender<UiMessage>,
+    torrent_content: Vec<u8>,
+) -> bool {
+    send_sync_status(ui_tx, SyncStatus::UpdatingTorrent);
+    
+    // Process the update with the torrent manager
+    match super::torrent::manage_torrent_task(
+        config,
+        api,
+        ui_tx,
+        state.current_torrent_id, // Pass current ID to forget
+        torrent_content, 
+    ).await {
+        Ok(new_id) => {
+            println!("Sync: Torrent task managed successfully. New ID: {:?}", new_id);
+            state.current_torrent_id = new_id;
+                                    
+            if let Some(id) = new_id {
+                refresh_managed_torrent_status(api, ui_tx, id);
+            }
+            // Let status be updated by refresh or next cycle
+            true
+        },
+        Err(e) => {
+            let err_msg = format!("Sync error managing torrent: {}", e);
+            eprintln!("Sync: {}", err_msg);
+            let _ = ui_tx.send(UiMessage::Error(err_msg.clone()));
+            send_sync_status(ui_tx, SyncStatus::Error(err_msg));
+            false
         }
     }
 } 

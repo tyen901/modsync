@@ -125,16 +125,21 @@ async fn main() -> anyhow::Result<()> {
         "ModSync",
         options,
         Box::new(move |_cc| {
-            // Pass initial config and channels to MyApp
-            Ok(Box::new(MyApp::new(
+            // Create MyApp instance
+            let app_box = Box::new(MyApp::new(
                 api,
-                ui_tx,
+                ui_tx.clone(), // Clone UI sender for initial check
                 ui_rx,
                 config_update_tx, // Pass config sender
-                sync_cmd_tx,      // Pass sync command sender
+                sync_cmd_tx.clone(), // Clone sync command sender for initial check
                 initial_config,
-            ))
-                as Box<dyn eframe::App>)
+            )) as Box<dyn eframe::App>;
+            
+            // Trigger initial check after the app is created
+            println!("Main: Triggering initial sync check");
+            let _ = sync_cmd_tx.send(UiMessage::TriggerManualRefresh);
+            
+            Ok(app_box)
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {}", e))?;

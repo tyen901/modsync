@@ -34,28 +34,19 @@ pub(crate) fn save_config_changes(app: &mut MyApp) {
     app.config.torrent_url = app.config_edit_url.trim().to_string();
     app.config.download_path = new_path;
 
-    // Clone the final config to save and send
-    let config_to_save_and_send = app.config.clone(); 
+    // Clone the final config to save
+    let config_to_save = app.config.clone();
     let ui_tx_clone = app.ui_tx.clone();
-    // Clone the config update sender
-    let config_update_tx_clone = app.config_update_tx.clone();
 
-    // Spawn task to handle file I/O and notify sync task
+    // Spawn task to handle file I/O only, without notifying sync task
     tokio::spawn(async move {
         match get_config_path() {
             Ok(config_path) => {
-                match config::save_config(&config_to_save_and_send, &config_path) {
+                match config::save_config(&config_to_save, &config_path) {
                     Ok(_) => {
                         println!("Configuration saved successfully.");
                         let _ = ui_tx_clone.send(UiMessage::Error("Configuration Saved".to_string()));
-
-                        // Send the updated config to the sync manager task
-                        println!("Action: Sending config update to sync task.");
-                        if let Err(e) = config_update_tx_clone.send(config_to_save_and_send) {
-                             eprintln!("Action: Failed to send config update to sync task: {}", e);
-                             // Send error to UI as well?
-                             let _ = ui_tx_clone.send(UiMessage::Error(format!("Failed to notify sync task: {}", e)));
-                        }
+                        // We no longer notify the sync task here
                     }
                     Err(e) => {
                         eprintln!("Error saving configuration: {}", e);
@@ -85,6 +76,20 @@ pub(crate) fn delete_extra_files(app: &mut MyApp) {
         }
     } else {
         println!("Action: delete_extra_files called but no files in prompt state.");
+    }
+}
+
+// Action to apply a remote torrent update
+pub(crate) fn apply_remote_update(app: &mut MyApp) {
+    if let Some((torrent_data, etag)) = app.remote_update.take() { // Take ownership and clear prompt
+        println!("Action: Apply remote update requested ({} bytes, ETag: {})", torrent_data.len(), etag);
+        // Send the update to the sync task for processing
+        if let Err(e) = app.sync_cmd_tx.send(UiMessage::ApplyRemoteUpdate(torrent_data, etag)) {
+            eprintln!("Action: Failed to send ApplyRemoteUpdate command: {}", e);
+            let _ = app.ui_tx.send(UiMessage::Error(format!("Failed to apply update: {}", e)));
+        }
+    } else {
+        println!("Action: apply_remote_update called but no remote update data available.");
     }
 }
 
