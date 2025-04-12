@@ -74,7 +74,7 @@ pub fn draw_ui(app: &mut MyApp, ctx: &egui::Context) {
 }
 
 /// Draw the prompt to delete extra files if any were found
-fn draw_extra_files_prompt(ctx: &egui::Context, ui: &mut egui::Ui, app: &mut MyApp) {
+fn draw_extra_files_prompt(ctx: &egui::Context, _ui: &mut egui::Ui, app: &mut MyApp) {
     let mut should_delete = false;
     let mut should_ignore = false;
 

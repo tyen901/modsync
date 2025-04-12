@@ -72,11 +72,6 @@ impl eframe::App for MyApp {
                     
                     // Clear error on successful update
                     self.last_error = None; 
-                    
-                    // If we have stats, potentially clear the prompt
-                    if self.managed_torrent_stats.is_some() {
-                        self.extra_files_to_prompt = None; 
-                    }
                 }
                 UiMessage::TorrentAdded(id) => {
                     println!("UI notified: Torrent {} added/managed", id);

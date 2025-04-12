@@ -2,7 +2,7 @@
 // Component for configuration UI
 
 use crate::app::MyApp;
-use crate::actions::save_config_changes;
+use crate::actions::{self, save_config_changes};
 use crate::ui::UiMessage;
 use eframe::egui::{self, RichText};
 
@@ -39,6 +39,9 @@ impl ConfigPanel {
 
             // Verify button (only enabled when config is valid)
             Self::draw_verify_button(ui, app);
+
+            // Open folder button (only enabled if path is set)
+            Self::draw_open_folder_button(ui, app);
         });
 
         ui.separator();
@@ -80,6 +83,21 @@ impl ConfigPanel {
             if let Err(e) = app.sync_cmd_tx.send(UiMessage::TriggerFolderVerify) {
                 eprintln!("UI: Failed to send folder verify request: {}", e);
             }
+        }
+    }
+    
+    /// Draw the open download folder button
+    fn draw_open_folder_button(ui: &mut egui::Ui, app: &mut MyApp) {
+        // Enable button only when download path is configured
+        let is_path_set = !app.config.download_path.as_os_str().is_empty();
+
+        if ui.add_enabled(
+            is_path_set,
+            egui::Button::new("Open Folder")
+        ).clicked() {
+             println!("UI: Open folder requested for: {}", app.config.download_path.display());
+             // Call the action function (to be created)
+             actions::open_download_folder(app);
         }
     }
     

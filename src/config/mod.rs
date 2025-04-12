@@ -21,6 +21,20 @@ pub fn get_config_path() -> Result<PathBuf> {
     Ok(config_dir.join("config.toml"))
 }
 
+// Helper to get the application cache directory
+pub fn get_cache_dir() -> Result<PathBuf> {
+    let proj_dirs = ProjectDirs::from("com", "ModSync", "ModSync")
+        .context("Failed to get project directories")?;
+    let cache_dir = proj_dirs.cache_dir();
+    fs::create_dir_all(cache_dir)?;
+    Ok(cache_dir.to_path_buf())
+}
+
+// Helper to get the full path for the cached torrent file
+pub fn get_cached_torrent_path() -> Result<PathBuf> {
+    Ok(get_cache_dir()?.join("cached.torrent"))
+}
+
 pub fn load_config(config_path: &Path) -> Result<AppConfig> {
     if config_path.exists() {
         let mut file = File::open(config_path)

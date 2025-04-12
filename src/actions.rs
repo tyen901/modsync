@@ -3,6 +3,7 @@ use crate::config::{self, get_config_path};
 use crate::ui::UiMessage;
 // Removed unused imports: ApiTorrentListOpts, TorrentDetailsResponse
 use std::path::PathBuf;
+use opener; // Add use statement for opener crate
 
 // --- Action Helper Functions --- 
 // These functions are called by the UI to perform actions, often involving
@@ -84,5 +85,37 @@ pub(crate) fn delete_extra_files(app: &mut MyApp) {
         }
     } else {
         println!("Action: delete_extra_files called but no files in prompt state.");
+    }
+}
+
+// Action to open the download folder in the system file explorer
+pub(crate) fn open_download_folder(app: &MyApp) {
+    let path_to_open = app.config.download_path.clone();
+    if path_to_open.as_os_str().is_empty() {
+        println!("Action: Cannot open folder, path is not set.");
+        let _ = app.ui_tx.send(UiMessage::Error("Download path not configured".to_string()));
+        return;
+    }
+    
+    // Ensure the path exists before trying to open it
+    if !path_to_open.exists() {
+         println!("Action: Download path does not exist: {}", path_to_open.display());
+         let _ = app.ui_tx.send(UiMessage::Error(format!("Directory does not exist: {}", path_to_open.display())));
+         return;
+    }
+
+    println!("Action: Attempting to open folder: {}", path_to_open.display());
+    // Use opener crate to open the path
+    match opener::open(&path_to_open) {
+        Ok(_) => {
+            println!("Action: Successfully requested to open folder.");
+            // Optionally send a success message to UI?
+            // let _ = app.ui_tx.send(UiMessage::Error("Opened folder".to_string()));
+        }
+        Err(e) => {
+            let err_msg = format!("Failed to open folder {}: {}", path_to_open.display(), e);
+            eprintln!("Action: {}", err_msg);
+            let _ = app.ui_tx.send(UiMessage::Error(err_msg));
+        }
     }
 }

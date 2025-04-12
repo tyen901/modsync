@@ -6,8 +6,8 @@ mod ui;
 
 use anyhow::Context;
 use app::MyApp;
-use config::{load_config, get_config_path, AppConfig};
-use librqbit::{Api, Session, SessionOptions};
+use config::{load_config, get_config_path, get_cached_torrent_path, AppConfig};
+use librqbit::{Api, Session, SessionOptions, AddTorrent, AddTorrentOptions};
 use tokio::sync::mpsc;
 use ui::UiMessage;
 
@@ -28,8 +28,9 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Setup librqbit session
+    let session_download_path = download_path.clone(); // Clone for session
     let session = Session::new_with_opts(
-        download_path, // Use the potentially empty path if not configured
+        session_download_path, // Pass the clone
         SessionOptions {
             disable_dht: true, // Keep DHT disabled for simplicity/focus
             disable_dht_persistence: true,
@@ -40,6 +41,56 @@ async fn main() -> anyhow::Result<()> {
     ).await.context("Failed to initialize librqbit session")?;
 
     let api = Api::new(session.clone(), None);
+
+    // --- Load cached torrent --- 
+    let mut initial_torrent_id = None;
+    match get_cached_torrent_path() {
+        Ok(cached_path) => {
+            if cached_path.exists() {
+                println!("Main: Found cached torrent at {}", cached_path.display());
+                match tokio::fs::read(&cached_path).await {
+                    Ok(torrent_bytes) => {
+                         println!("Main: Read {} bytes from cached torrent.", torrent_bytes.len());
+                        // Add the cached torrent, not paused, ensuring overwrite checks
+                        let add_request = AddTorrent::from_bytes(torrent_bytes);
+                        let add_options = AddTorrentOptions {
+                            output_folder: Some(download_path.to_string_lossy().into_owned()), // Use original download_path here
+                            paused: false, // Start unpaused to trigger immediate check/sync
+                            overwrite: true, // Ensure files are checked against cache
+                            ..Default::default()
+                        };
+                        match api.api_add_torrent(add_request, Some(add_options)).await {
+                            Ok(response) => {
+                                if let Some(id) = response.id {
+                                    println!("Main: Successfully added cached torrent with ID: {}", id);
+                                    initial_torrent_id = Some(id);
+                                } else {
+                                    eprintln!("Main: Added cached torrent but API returned no ID.");
+                                    // Delete potentially broken cache file?
+                                    let _ = tokio::fs::remove_file(&cached_path).await;
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("Main: Error adding cached torrent: {}. Deleting cache.", e);
+                                let _ = tokio::fs::remove_file(&cached_path).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Main: Error reading cached torrent file {}: {}. Deleting cache.", cached_path.display(), e);
+                        let _ = tokio::fs::remove_file(cached_path).await;
+                    }
+                }
+            } else {
+                println!("Main: No cached torrent file found at {}", cached_path.display());
+            }
+        }
+        Err(e) => {
+            eprintln!("Main: Error getting cached torrent path: {}", e);
+            // Proceed without cache
+        }
+    }
+    // --------------------------
 
     // Create channel for UI communication
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiMessage>();
@@ -60,6 +111,7 @@ async fn main() -> anyhow::Result<()> {
             sync_ui_tx,
             config_update_rx, // Pass config receiver
             sync_cmd_rx,      // Pass UI command receiver
+            initial_torrent_id, // Pass the initial ID
         )
         .await
         {
