@@ -1,8 +1,11 @@
-// This file is required for integration tests to access our crate modules
+// This file makes the crate a library and declares modules for use
+// by the binary (main.rs) and integration tests.
 
-// Re-export modules that need to be accessed in integration tests
+pub mod actions;
+pub mod app;
 pub mod config;
+pub mod sync;
 pub mod ui;
 
-// Re-export librqbit for easier access in tests
+// Re-export librqbit for convenience if needed by tests or binary
 pub use librqbit;
