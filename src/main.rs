@@ -102,7 +102,8 @@ async fn main() -> anyhow::Result<()> {
     let sync_config = initial_config.clone();
     let sync_ui_tx = ui_tx.clone();
     tokio::spawn(async move {
-        println!("Sync manager task started.");
+        println!("Main: Sync manager started in background task");
+
         if let Err(e) = sync::state::run_sync_manager(
             sync_config,
             sync_api,
@@ -130,10 +131,6 @@ async fn main() -> anyhow::Result<()> {
                 sync_cmd_tx.clone(), // Clone sync command sender for initial check
                 initial_config,
             )) as Box<dyn eframe::App>;
-            
-            // Trigger initial check after the app is created
-            println!("Main: Triggering initial sync check");
-            let _ = sync_cmd_tx.send(UiMessage::TriggerManualRefresh);
             
             Ok(app_box)
         }),

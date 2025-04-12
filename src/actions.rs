@@ -81,10 +81,10 @@ pub(crate) fn delete_extra_files(app: &mut MyApp) {
 
 // Action to apply a remote torrent update
 pub(crate) fn apply_remote_update(app: &mut MyApp) {
-    if let Some((torrent_data, etag)) = app.remote_update.take() { // Take ownership and clear prompt
-        println!("Action: Apply remote update requested ({} bytes, ETag: {})", torrent_data.len(), etag);
+    if let Some(torrent_data) = app.remote_update.take() { // Take ownership and clear prompt
+        println!("Action: Apply remote update requested ({} bytes)", torrent_data.len());
         // Send the update to the sync task for processing
-        if let Err(e) = app.sync_cmd_tx.send(UiMessage::ApplyRemoteUpdate(torrent_data, etag)) {
+        if let Err(e) = app.sync_cmd_tx.send(UiMessage::ApplyRemoteUpdate(torrent_data)) {
             eprintln!("Action: Failed to send ApplyRemoteUpdate command: {}", e);
             let _ = app.ui_tx.send(UiMessage::Error(format!("Failed to apply update: {}", e)));
         }
@@ -123,4 +123,63 @@ pub(crate) fn open_download_folder(app: &MyApp) {
             let _ = app.ui_tx.send(UiMessage::Error(err_msg));
         }
     }
+}
+
+// Action to update from remote URL using the latest configuration values
+pub(crate) fn update_from_remote(app: &mut MyApp) {
+    println!("Action: Update from remote URL requested");
+    
+    // First, update the configuration from the UI fields
+    let new_url = app.config_edit_url.trim().to_string();
+    let new_path = PathBuf::from(app.config_edit_path_str.trim());
+    
+    // Validate input
+    if new_url.is_empty() {
+        println!("Error: Remote URL cannot be empty for update.");
+        let _ = app.ui_tx.send(UiMessage::Error("Remote URL cannot be empty".to_string()));
+        return;
+    }
+    
+    if new_path.to_string_lossy().is_empty() {
+        println!("Error: Local path cannot be empty for update.");
+        let _ = app.ui_tx.send(UiMessage::Error("Local path cannot be empty".to_string()));
+        return;
+    }
+    
+    // Update the config in MyApp state
+    app.config.torrent_url = new_url.clone();
+    app.config.download_path = new_path;
+    
+    // Clone the config to save
+    let config_to_save = app.config.clone();
+    let ui_tx_clone = app.ui_tx.clone();
+    let sync_cmd_tx_clone = app.sync_cmd_tx.clone();
+    
+    // Spawn task to handle file I/O and trigger force download and compare
+    tokio::spawn(async move {
+        match get_config_path() {
+            Ok(config_path) => {
+                match config::save_config(&config_to_save, &config_path) {
+                    Ok(_) => {
+                        println!("Configuration saved successfully, triggering direct torrent download and comparison.");
+                        let _ = ui_tx_clone.send(UiMessage::Error("Configuration Updated".to_string()));
+                        
+                        // Instead of TriggerManualRefresh, use our new message
+                        if let Err(e) = sync_cmd_tx_clone.send(UiMessage::ForceDownloadAndCompare(new_url)) {
+                            eprintln!("Failed to trigger direct download: {}", e);
+                            let _ = ui_tx_clone.send(UiMessage::Error(format!("Failed to trigger direct download: {}", e)));
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error saving configuration: {}", e);
+                        let _ = ui_tx_clone.send(UiMessage::Error(format!("Failed to save config: {}", e)));
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error getting config path: {}", e);
+                let _ = ui_tx_clone.send(UiMessage::Error(format!("Failed to get config path: {}", e)));
+            }
+        }
+    });
 }

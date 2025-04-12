@@ -7,5 +7,4 @@ pub mod torrent;
 pub mod cleaner;
 
 // Potentially re-export key functions or structs if needed elsewhere
-// pub use http::check_remote_torrent;
 // pub use torrent::manage_torrent_task; 

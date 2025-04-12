@@ -24,7 +24,7 @@ pub struct MyApp {
     pub(crate) extra_files_to_prompt: Option<Vec<PathBuf>>, // Files for delete prompt
     pub(crate) file_tree: crate::ui::torrent_file_tree::TorrentFileTree, // Add state for the file tree
     // New fields for remote update detection
-    pub(crate) remote_update: Option<(Vec<u8>, String)>, // Torrent content and etag from remote update
+    pub(crate) remote_update: Option<Vec<u8>>, // Torrent content from remote update
 }
 
 impl MyApp {
@@ -65,73 +65,55 @@ impl eframe::App for MyApp {
         // Schedule a repaint periodically to ensure UI stays fresh
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         
-        // Process any messages received from background tasks
+        // Process any messages received from the sync task via ui_rx
         while let Ok(message) = self.ui_rx.try_recv() {
             match message {
                 UiMessage::UpdateManagedTorrent(torrent_stats_opt) => {
                     println!("UI received managed torrent stats update: {:?}", torrent_stats_opt.as_ref().map(|(id, _)| id));
                     self.managed_torrent_stats = torrent_stats_opt;
-                    
-                    // Clear error on successful update
                     self.last_error = None; 
                 }
                 UiMessage::TorrentAdded(id) => {
                     println!("UI notified: Torrent {} added/managed", id);
                     self.last_error = None;
-                    
-                    // Immediately refresh torrent stats when added
                     self.refresh_current_torrent_stats();
                 }
                 UiMessage::Error(err_msg) => {
                     eprintln!("UI received error: {}", err_msg);
                     self.last_error = Some(err_msg.clone());
-                    // Still set sync status to Error since this is about the sync process
                     self.sync_status = SyncStatus::Error(err_msg);
                 }
                 UiMessage::UpdateSyncStatus(status) => {
                     println!("UI received sync status update: {:?}", status);
-                    // Check if we need to refresh when returning to idle
                     let should_refresh = status == SyncStatus::Idle;
-                    
                     self.sync_status = status;
-                    // If the new status isn't an error, clear the last error
                     if !matches!(self.sync_status, SyncStatus::Error(_)) {
                         self.last_error = None;
                     }
-                    
-                    // If returning to idle after an update, refresh torrent details
                     if should_refresh {
                         self.refresh_current_torrent_stats();
                     }
                 }
-                // Handle the new message for displaying the prompt
                 UiMessage::ExtraFilesFound(files) => {
                     println!("UI received ExtraFilesFound: {} files", files.len());
                     if files.is_empty() {
-                        // Maybe show a confirmation? For now, just clear.
                         self.extra_files_to_prompt = None;
                     } else {
                         self.extra_files_to_prompt = Some(files);
                     }
-                    // Don't change overall sync status here, let the sync task manage it.
                 }
-                // Handle remote update found message
-                UiMessage::RemoteUpdateFound(torrent_data, etag) => {
-                    println!("UI received RemoteUpdateFound: {} bytes with etag: {}", torrent_data.len(), etag);
-                    self.remote_update = Some((torrent_data, etag));
-                    // Status remains unchanged, we'll prompt the user
+                UiMessage::RemoteUpdateFound(torrent_data) => {
+                    println!("UI received RemoteUpdateFound: {} bytes", torrent_data.len());
+                    self.remote_update = Some(torrent_data);
                 }
-                // TriggerManualRefresh messages are meant for the sync manager, not the UI
-                UiMessage::TriggerManualRefresh | UiMessage::TriggerFolderVerify | 
-                UiMessage::DeleteExtraFiles(_) | UiMessage::ApplyRemoteUpdate(_, _) => {
-                    // This shouldn't happen as these messages are sent directly to the sync manager
-                    // But handle it just in case
-                    println!("UI received Sync Manager Command - forwarding");
-                    // Forward the original message
-                    if let Err(e) = self.sync_cmd_tx.send(message) {
-                        eprintln!("Error forwarding sync command: {}", e);
-                    }
-                }
+                // Explicitly ignore command messages that might leak through (shouldn't happen)
+                UiMessage::UpdateConfig(_) |
+                UiMessage::TriggerFolderVerify |
+                UiMessage::DeleteExtraFiles(_) |
+                UiMessage::ApplyRemoteUpdate(_) |
+                UiMessage::ForceDownloadAndCompare(_) => {
+                    eprintln!("UI received unexpected command message: {:?}. Ignoring.", message);
+                } 
             }
         }
         

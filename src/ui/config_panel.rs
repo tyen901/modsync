@@ -2,7 +2,7 @@
 // Component for configuration UI
 
 use crate::app::MyApp;
-use crate::actions::{self, save_config_changes};
+use crate::actions::{self, save_config_changes, update_from_remote};
 use crate::ui::UiMessage;
 use eframe::egui::{self, RichText};
 
@@ -27,16 +27,21 @@ impl ConfigPanel {
             ui.text_edit_singleline(&mut app.config_edit_path_str);
         });
 
-        // Buttons row
+        // Buttons row 1 - Configuration
         ui.horizontal(|ui| {
             // Save config button
             if ui.button("Save Configuration").clicked() {
                 save_config_changes(app);
             }
             
-            // Refresh button (only enabled when config is valid)
-            Self::draw_refresh_button(ui, app);
-
+            // New button to update from remote URL
+            if ui.button("Update from Remote").clicked() {
+                update_from_remote(app);
+            }
+        });
+        
+        // Buttons row 2 - Operations
+        ui.horizontal(|ui| {
             // Verify button (only enabled when config is valid)
             Self::draw_verify_button(ui, app);
 
@@ -50,23 +55,6 @@ impl ConfigPanel {
         Self::draw_sync_status(ui, app);
         
         ui.separator();
-    }
-    
-    /// Draw the refresh button
-    fn draw_refresh_button(ui: &mut egui::Ui, app: &mut MyApp) {
-        // Enable button only when config is valid
-        let is_config_valid = !app.config.torrent_url.is_empty() && 
-                             !app.config.download_path.as_os_str().is_empty();
-        
-        if ui.add_enabled(
-            is_config_valid,
-            egui::Button::new("Check for Updates")
-        ).clicked() {
-            println!("UI: Manual refresh requested");
-            if let Err(e) = app.sync_cmd_tx.send(UiMessage::TriggerManualRefresh) {
-                eprintln!("UI: Failed to send manual refresh request: {}", e);
-            }
-        }
     }
     
     /// Draw the verify local files button
