@@ -6,7 +6,7 @@ mod ui;
 
 use anyhow::Context;
 use app::MyApp;
-use config::{load_config, get_config_path, get_cached_torrent_path, AppConfig};
+use config::{load_config, get_config_path, get_cached_torrent_path};
 use librqbit::{Api, Session, SessionOptions, AddTorrent, AddTorrentOptions};
 use tokio::sync::mpsc;
 use ui::UiMessage;
@@ -96,8 +96,6 @@ async fn main() -> anyhow::Result<()> {
     let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiMessage>();
     // Create channel for messages from UI to sync manager
     let (sync_cmd_tx, sync_cmd_rx) = mpsc::unbounded_channel::<UiMessage>();
-    // Create channel for Config updates
-    let (config_update_tx, config_update_rx) = mpsc::unbounded_channel::<AppConfig>();
 
     // Spawn the sync manager task
     let sync_api = api.clone();
@@ -109,7 +107,6 @@ async fn main() -> anyhow::Result<()> {
             sync_config,
             sync_api,
             sync_ui_tx,
-            config_update_rx, // Pass config receiver
             sync_cmd_rx,      // Pass UI command receiver
             initial_torrent_id, // Pass the initial ID
         )
@@ -130,7 +127,6 @@ async fn main() -> anyhow::Result<()> {
                 api,
                 ui_tx.clone(), // Clone UI sender for initial check
                 ui_rx,
-                config_update_tx, // Pass config sender
                 sync_cmd_tx.clone(), // Clone sync command sender for initial check
                 initial_config,
             )) as Box<dyn eframe::App>;

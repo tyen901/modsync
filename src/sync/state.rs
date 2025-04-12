@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use crate::config::get_cached_torrent_path; // Import cache path helper
 
 // Import the cleaner functions
-use super::cleaner::{find_extra_files, get_expected_files_from_details, get_expected_files_from_bytes};
+use super::cleaner::{find_extra_files, get_expected_files_from_details};
 
 // Structure to hold the sync state
 #[derive(Debug, Default)]
@@ -39,7 +39,6 @@ pub async fn run_sync_manager(
     initial_config: AppConfig,
     api: librqbit::Api,
     ui_tx: mpsc::UnboundedSender<UiMessage>,
-    mut config_update_rx: mpsc::UnboundedReceiver<AppConfig>,
     mut ui_rx: mpsc::UnboundedReceiver<UiMessage>,
     initial_torrent_id: Option<usize>, // Accept initial ID
 ) -> Result<()> {
@@ -47,7 +46,7 @@ pub async fn run_sync_manager(
         current_torrent_id: initial_torrent_id, // Initialize with the ID
         ..Default::default()
     };
-    let mut current_config = initial_config;
+    let current_config = initial_config;
 
     // Create HTTP client once
     let http_client = super::http::create_http_client().context("Failed to create HTTP client")?;
@@ -141,17 +140,6 @@ pub async fn run_sync_manager(
                 }
             }
 
-            // Handle config updates
-            Some(new_config) = config_update_rx.recv() => {
-                println!("Sync: Received config update: URL='{}', Path='{}'", 
-                         new_config.torrent_url, new_config.download_path.display());
-                
-                current_config = new_config;
-                
-                // We no longer trigger a refresh automatically on config change
-                println!("Sync: Configuration updated, waiting for manual refresh.");
-                send_sync_status(&ui_tx, SyncStatus::Idle);
-            }
         }
     }
 }

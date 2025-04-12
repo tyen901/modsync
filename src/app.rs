@@ -14,7 +14,6 @@ pub struct MyApp {
     pub(crate) ui_tx: mpsc::UnboundedSender<UiMessage>,            // Channel Sender for UI updates
     pub(crate) ui_rx: mpsc::UnboundedReceiver<UiMessage>,          // Channel Receiver for UI updates
     // Added sender for config updates to sync task
-    pub(crate) config_update_tx: mpsc::UnboundedSender<AppConfig>,
     pub(crate) sync_cmd_tx: mpsc::UnboundedSender<UiMessage>,         // Store the sync command sender
     pub(crate) config: AppConfig,                                     // Current application config
     // Temporary fields for UI input before saving
@@ -34,7 +33,6 @@ impl MyApp {
         api: Api,
         ui_tx: mpsc::UnboundedSender<UiMessage>,
         ui_rx: mpsc::UnboundedReceiver<UiMessage>,
-        config_update_tx: mpsc::UnboundedSender<AppConfig>,
         sync_cmd_tx: mpsc::UnboundedSender<UiMessage>,
         initial_config: AppConfig,
     ) -> Self {
@@ -48,7 +46,6 @@ impl MyApp {
             managed_torrent_stats: None,
             ui_tx,
             ui_rx,
-            config_update_tx,
             sync_cmd_tx,         // Store the sync command sender
             config: initial_config,
             config_edit_url,
