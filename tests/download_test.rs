@@ -387,3 +387,99 @@ async fn test_fix_corrupted_files() -> Result<()> {
 
     Ok(())
 }
+
+// Add a new function to parse torrent files and extract the files/directories list
+async fn extract_torrent_contents(torrent_path: &Path) -> Result<Vec<(PathBuf, u64)>> {
+    println!("Extracting contents from torrent file: {:?}", torrent_path);
+    
+    // Read the torrent file
+    let torrent_bytes = std::fs::read(torrent_path)?;
+    
+    // Instead of using torrent_from_bytes which may have issues with our test file,
+    // use the same approach as the download test - directly add it to a temporary session
+    let temp_dir = tempdir()?;
+    
+    let session = Session::new_with_opts(
+        temp_dir.path().to_path_buf(),
+        SessionOptions {
+            disable_dht: true,
+            disable_dht_persistence: true,
+            fastresume: false,
+            persistence: None,
+            listen_port_range: None,
+            ..Default::default()
+        },
+    ).await?;
+    
+    // Add the torrent to the session temporarily to get its info
+    let add_response = session
+        .add_torrent(AddTorrent::from_bytes(torrent_bytes), None)
+        .await?;
+    
+    let handle = add_response.into_handle().expect("Failed to get torrent handle");
+    
+    // Extract files from the torrent
+    let mut files = Vec::new();
+    
+    // Get the name from the handle
+    let root_dir = PathBuf::from(handle.name().unwrap_or_else(|| "unknown".to_string()));
+    
+    // Get file information through the metadata in the handle
+    handle.with_metadata(|metadata| {
+        // Iterate through file_infos
+        for file_info in &metadata.file_infos {
+            let file_path = root_dir.join(&file_info.relative_filename);
+            files.push((file_path, file_info.len));
+        }
+    })?;
+    
+    println!("Found {} files in torrent", files.len());
+    for (path, size) in &files {
+        println!("  - {}: {} bytes", path.display(), size);
+    }
+    
+    Ok(files)
+}
+
+// Add a new test to verify torrent file parsing
+#[tokio::test]
+async fn test_parse_torrent_file() -> Result<()> {
+    let torrent_path = Path::new(TEST_TORRENT_PATH);
+    let files = extract_torrent_contents(torrent_path).await?;
+    
+    // Verify the correct number of files in our test torrent
+    assert!(!files.is_empty(), "Torrent should contain at least one file");
+    
+    // Verify the structure matches what we expect
+    let expected_root_dir = "test_folder";
+    
+    // Every file path should start with the root directory
+    for (path, _) in &files {
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.starts_with(expected_root_dir),
+            "File path '{}' doesn't start with expected root dir '{}'",
+            path_str,
+            expected_root_dir
+        );
+    }
+    
+    // Verify the specific files we expect in our test torrent
+    let expected_files = vec![
+        format!("{}/README", expected_root_dir),
+        format!("{}/images/LOC_Main_Reading_Room_Highsmith.jpg", expected_root_dir),
+        format!("{}/images/melk-abbey-library.jpg", expected_root_dir),
+    ];
+    
+    for expected_file in expected_files {
+        let expected_path = PathBuf::from(expected_file);
+        assert!(
+            files.iter().any(|(path, _)| path == &expected_path),
+            "Expected file '{}' not found in torrent",
+            expected_path.display()
+        );
+    }
+    
+    println!("Torrent file parsing test passed!");
+    Ok(())
+}
