@@ -7,6 +7,7 @@ use crate::actions; // Import actions module
 // Create sub-modules
 mod torrent_display;
 mod config_panel;
+pub mod torrent_file_tree;
 
 // Re-export components
 pub use torrent_display::TorrentDisplay;

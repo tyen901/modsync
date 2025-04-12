@@ -23,6 +23,7 @@ pub struct MyApp {
     pub(crate) last_error: Option<String>,  // To display errors in the UI
     pub(crate) sync_status: SyncStatus,     // Current status of the sync task
     pub(crate) extra_files_to_prompt: Option<Vec<PathBuf>>, // Files for delete prompt
+    pub(crate) file_tree: crate::ui::torrent_file_tree::TorrentFileTree, // Add state for the file tree
 }
 
 impl MyApp {
@@ -53,6 +54,7 @@ impl MyApp {
             last_error: None,
             sync_status: SyncStatus::Idle, // Start in idle state
             extra_files_to_prompt: None, // Initialize prompt state
+            file_tree: Default::default(), // Initialize file tree state
         }
     }
 }

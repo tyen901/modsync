@@ -2,7 +2,7 @@
 // Component for displaying information about the single active torrent
 
 use crate::app::MyApp;
-use eframe::egui::{self, RichText, ProgressBar, Color32, Ui, Layout, Align};
+use eframe::egui::{self, RichText, ProgressBar, Color32, Ui, Layout, Align, SidePanel, CentralPanel};
 use librqbit::{TorrentStatsState, api::{TorrentDetailsResponse, TorrentStats}};
 use chrono;
 
@@ -35,7 +35,7 @@ pub struct TorrentDisplay;
 
 impl TorrentDisplay {
     /// Draw the torrent details
-    pub fn draw(ui: &mut egui::Ui, app: &MyApp) {
+    pub fn draw(ui: &mut egui::Ui, app: &mut MyApp) {
         ui.heading("Torrent Status");
 
         // --- Error Display (if any) ---
@@ -54,20 +54,42 @@ impl TorrentDisplay {
         // --- Use the managed_torrent_stats from MyApp --- 
         if let Some((id, stats)) = &app.managed_torrent_stats {
             // Fetch details separately if needed for name, files etc.
-            // For now, we'll pass stats to draw_torrent_stats, and fetch details inside if needed
             match app.api.api_torrent_details((*id).into()) {
                 Ok(details) => {
-                    // Pass both stats and details
-                    Self::draw_torrent_stats_and_details(ui, *id, stats, &details);
+                    // Main area for torrent details, using a panel layout
+                    SidePanel::left("file_tree_panel")
+                        .resizable(true)
+                        .default_width(250.0)
+                        .show_inside(ui, |ui| {
+                             ui.heading("Files");
+                             ui.separator();
+                             if let Some(files) = &details.files {
+                                // Convert to the format expected by TorrentFileTree
+                                let file_data: Vec<(String, u64)> = files.iter()
+                                    .filter(|f| f.included)
+                                    .map(|f| (f.name.clone(), f.length))
+                                    .collect();
+                                app.file_tree.ui(ui, &file_data);
+                             } else {
+                                ui.label("No file information available.");
+                             }
+                        });
+
+                    CentralPanel::default().show_inside(ui, |ui| {
+                        // Pass both stats and details to the main info drawing function
+                        Self::draw_torrent_stats_and_details(ui, *id, stats, &details);
+                    });
                 }
                 Err(e) => {
-                    // If details fail, still attempt to draw basic stats
-                    ui.label(RichText::new(format!("Warning: Could not fetch full details for torrent {}: {}. Showing basic stats.", id, e)).color(Color32::YELLOW));
-                    Self::draw_torrent_stats_only(ui, *id, stats);
+                    // If details fail, still attempt to draw basic stats in the central area
+                    CentralPanel::default().show_inside(ui, |ui| {
+                        ui.label(RichText::new(format!("Warning: Could not fetch full details for torrent {}: {}. Showing basic stats.", id, e)).color(Color32::YELLOW));
+                        Self::draw_torrent_stats_only(ui, *id, stats);
+                    });
                 }
             }
 
-            // Show last updated time at the bottom
+            // Show last updated time (consider moving inside CentralPanel?)
             ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
@@ -76,7 +98,10 @@ impl TorrentDisplay {
                     .small().color(Color32::GRAY));
             });
         } else {
-            Self::draw_no_torrent_message(ui, app);
+            // Display message when no torrent is active
+             CentralPanel::default().show_inside(ui, |ui| {
+                Self::draw_no_torrent_message(ui, app);
+             });
         }
     }
     
@@ -153,33 +178,6 @@ impl TorrentDisplay {
                         }
                     });
                 });
-                
-                // File information section if available (from details)
-                if let Some(files) = &details.files {
-                    ui.add_space(8.0);
-                    Self::info_section(ui, "Files");
-                    
-                    let included_count = files.iter().filter(|f| f.included).count();
-                    Self::info_row(ui, "Files Included", 
-                        &format!("{}/{}", included_count, files.len()));
-                    
-                    const MAX_FILES_TO_SHOW: usize = 5;
-                    if !files.is_empty() {
-                        ui.add_space(4.0);
-                        for (i, file) in files.iter().filter(|f| f.included).take(MAX_FILES_TO_SHOW).enumerate() {
-                            ui.label(RichText::new(format!("{}. {} ({})", 
-                                i + 1, 
-                                file.name, 
-                                format_size(file.length)
-                            )).small());
-                        }
-                        
-                        if included_count > MAX_FILES_TO_SHOW {
-                            ui.label(RichText::new(format!("... and {} more files", 
-                                included_count - MAX_FILES_TO_SHOW)).small().italics());
-                        }
-                    }
-                }
             });
     }
     
