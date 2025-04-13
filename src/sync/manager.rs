@@ -7,7 +7,7 @@ use std::time::Instant;
 use tokio::sync::mpsc;
 
 use crate::config::AppConfig;
-use crate::ui::SyncStatus;
+use crate::ui::utils::SyncStatus;
 
 use super::cleaner::{find_extra_files, get_expected_files_from_details};
 use super::local::{delete_files, refresh_managed_torrent_status_event, verify_folder_contents, fix_missing_files};

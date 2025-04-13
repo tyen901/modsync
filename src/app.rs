@@ -1,7 +1,8 @@
 // src/app.rs
 
 use crate::config::AppConfig;
-use crate::ui::SyncStatus;
+use crate::ui::utils::SyncStatus;
+use crate::ui::state::UiState;
 use crate::sync::{SyncCommand, SyncEvent};
 use eframe::egui;
 use librqbit::api::{Api, TorrentStats};
@@ -26,11 +27,12 @@ pub struct MyApp {
     pub(crate) sync_status: SyncStatus,     // Current status of the sync task
     pub(crate) extra_files_to_prompt: Option<Vec<PathBuf>>, // Files for delete prompt
     pub(crate) missing_files_to_prompt: Option<HashSet<PathBuf>>, // Missing files for prompt
-    pub(crate) file_tree: crate::ui::torrent_file_tree::TorrentFileTree, // Add state for the file tree
     // New fields for remote update detection
     pub(crate) remote_update: Option<Vec<u8>>, // Torrent content from remote update
     // Time tracking
     last_refresh: Option<std::time::Instant>, // Track when we last refreshed stats
+    // UI State (persistent)
+    pub(crate) ui_state: UiState, // Store persistent UI state here
 }
 
 impl MyApp {
@@ -47,6 +49,14 @@ impl MyApp {
             .download_path
             .to_string_lossy()
             .into_owned();
+        
+        // Initialize persistent UI state
+        let initial_ui_state = UiState::new(
+            config_edit_url.clone(), 
+            config_edit_path_str.clone()
+        );
+        // Potentially set other initial UI state fields here if needed
+
         Self {
             api,
             managed_torrent_stats: None,
@@ -60,9 +70,9 @@ impl MyApp {
             sync_status: SyncStatus::Idle, // Start in idle state
             extra_files_to_prompt: None, // Initialize prompt state
             missing_files_to_prompt: None, // Initialize missing files prompt state
-            file_tree: Default::default(), // Initialize file tree state
             remote_update: None, // Initialize remote update state
             last_refresh: None, // Initialize last refresh state
+            ui_state: initial_ui_state, // Store the initialized UI state
         }
     }
 }

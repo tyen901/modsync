@@ -3,7 +3,7 @@
 //! Defines the message types used for communication between the sync manager and UI
 
 use crate::config::AppConfig;
-use crate::ui::SyncStatus;
+use crate::ui::utils::SyncStatus;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::collections::HashSet;

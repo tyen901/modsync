@@ -1,34 +1,56 @@
 use crate::app::MyApp;
 use eframe::egui::{self, CentralPanel};
 use crate::actions; // Import actions module
+use crate::ui::state::{UiState, UiAction, TorrentStats, TorrentFileStats, ModalState};
+use crate::ui::utils::SyncStatus; // Import SyncStatus
 
 // Create sub-modules
 mod torrent_display;
 mod config_panel;
 pub mod torrent_file_tree;
-mod utils;
-mod state;
+pub mod utils; // Make utils public
+pub mod state; // Make state module public
 mod modals;
 
-// Re-export components
-pub use torrent_display::TorrentDisplay;
-pub use config_panel::ConfigPanel;
-pub use utils::SyncStatus;
-pub use state::{UiState, UiAction, ModalState, TorrentStats, TorrentFileStats};
-
-/// Update the UI state from the application state
-fn update_ui_state(app: &MyApp, ui_state: &mut UiState) {
-    // Update configuration fields
-    ui_state.config_url = app.config_edit_url.clone();
-    ui_state.config_path = app.config_edit_path_str.clone();
-    ui_state.download_path = app.config.download_path.clone();
+/// Update the mutable UI state based on the immutable App state
+fn update_persistent_ui_state(
+    // Pass only the needed immutable fields from App
+    app_config: &crate::config::AppConfig,
+    config_edit_url: &str,
+    config_edit_path_str: &str,
+    last_error: &Option<String>,
+    sync_status: &SyncStatus,
+    missing_files_to_prompt: &Option<std::collections::HashSet<std::path::PathBuf>>,
+    extra_files_to_prompt: &Option<Vec<std::path::PathBuf>>,
+    remote_update: &Option<Vec<u8>>,
+    managed_torrent_stats: &Option<(usize, std::sync::Arc<librqbit::TorrentStats>)>, 
+    api: &librqbit::Api, // Needed for file details call
+    ui_state: &mut UiState, // The state to update
+) {
+    // Update fields in ui_state that depend on app state
     
-    // Update error and sync status
-    ui_state.last_error = app.last_error.clone();
-    ui_state.sync_status = app.sync_status.clone();
+    // Update configuration edit fields
+    ui_state.config_url = config_edit_url.to_string();
+    ui_state.config_path = config_edit_path_str.to_string();
+    ui_state.download_path = app_config.download_path.clone();
     
-    // Update torrent stats if available
-    if let Some((id, stats)) = &app.managed_torrent_stats {
+    // Update status/error derived from app
+    ui_state.last_error = last_error.clone();
+    ui_state.sync_status = sync_status.clone();
+    
+    // Update modal state based on app prompts
+    if let Some(files) = missing_files_to_prompt {
+        ui_state.modal_state = ModalState::MissingFiles(files.clone());
+    } else if let Some(files) = extra_files_to_prompt {
+        ui_state.modal_state = ModalState::ExtraFiles(files.clone());
+    } else if remote_update.is_some() { 
+        ui_state.modal_state = ModalState::RemoteUpdateAvailable;
+    } else {
+        ui_state.modal_state = ModalState::None;
+    }
+    
+    // Update torrent stats if available from app state
+    if let Some((id, stats)) = managed_torrent_stats {
         let torrent_id = *id;
         
         // Convert librqbit TorrentStats to our UI TorrentStats
@@ -81,7 +103,7 @@ fn update_ui_state(app: &MyApp, ui_state: &mut UiState) {
         });
         
         // Try to fetch file details
-        if let Ok(details) = app.api.api_torrent_details(torrent_id.into()) {
+        if let Ok(details) = api.api_torrent_details(torrent_id.into()) {
             let file_data: Vec<(String, u64)> = if let Some(files) = &details.files {
                 files.iter()
                     .filter(|f| f.included)
@@ -97,27 +119,16 @@ fn update_ui_state(app: &MyApp, ui_state: &mut UiState) {
                 output_folder: Some(details.output_folder),
                 files: file_data,
             });
+        } else {
+            // Clear file details if API call fails
+            ui_state.torrent_files = None; 
         }
     } else {
         ui_state.torrent_stats = None;
         ui_state.torrent_files = None;
     }
     
-    // Update modal state
-    if let Some(files) = &app.missing_files_to_prompt {
-        ui_state.modal_state = ModalState::MissingFiles(files.clone());
-    } else if let Some(files) = &app.extra_files_to_prompt {
-        ui_state.modal_state = ModalState::ExtraFiles(files.clone());
-    } else if let Some(data) = &app.remote_update {
-        ui_state.modal_state = ModalState::RemoteUpdateAvailable;
-    } else {
-        ui_state.modal_state = ModalState::None;
-    }
-    
-    // Update file tree
-    ui_state.file_tree = app.file_tree.clone();
-    
-    // Update last update time if needed
+    // Update last update time
     ui_state.last_update = Some(std::time::Instant::now());
 }
 
@@ -125,7 +136,7 @@ fn update_ui_state(app: &MyApp, ui_state: &mut UiState) {
 fn process_ui_action(action: UiAction, app: &mut MyApp) {
     match action {
         UiAction::SaveConfig => {
-            // Validate URL and path
+            // Validate URL and path (reading from app state)
             if app.config_edit_url.trim().is_empty() {
                 app.last_error = Some("Remote URL cannot be empty".to_string());
                 return;
@@ -162,6 +173,7 @@ fn process_ui_action(action: UiAction, app: &mut MyApp) {
         UiAction::ApplyRemoteUpdate => {
             actions::apply_remote_update(app);
         },
+        // UiAction::SetTorrentTab(_) => { /* No-op */ }
         UiAction::DismissMissingFilesModal => {
             app.missing_files_to_prompt = None;
         },
@@ -179,27 +191,36 @@ fn process_ui_action(action: UiAction, app: &mut MyApp) {
     }
 }
 
-// Main function to draw the UI
+// Main function to draw the UI - Now takes &mut UiState from MyApp
 pub fn draw_ui(app: &mut MyApp, ctx: &egui::Context) {
-    // Create/update UI state from app
-    let mut ui_state = UiState::new(
-        app.config_edit_url.clone(),
-        app.config_edit_path_str.clone(),
+    // Update the persistent ui_state based on app state
+    // Pass only the necessary immutable fields from app
+    update_persistent_ui_state(
+        &app.config,
+        &app.config_edit_url,
+        &app.config_edit_path_str,
+        &app.last_error,
+        &app.sync_status,
+        &app.missing_files_to_prompt,
+        &app.extra_files_to_prompt,
+        &app.remote_update,
+        &app.managed_torrent_stats,
+        &app.api,
+        &mut app.ui_state // Pass mutable ui_state
     );
-    update_ui_state(app, &mut ui_state);
     
     // Variable to store action from UI components
     let mut ui_action = UiAction::None;
     
-    // Draw the main UI using components
+    // Draw the main UI using components, passing mutable ui_state
     CentralPanel::default().show(ctx, |ui| {
-        // Use the ConfigPanel component
-        if let Some(action) = ConfigPanel::draw(ui, &mut ui_state) {
+        // Use the ConfigPanel component - Use full path
+        if let Some(action) = config_panel::ConfigPanel::draw(ui, &mut app.ui_state) {
             ui_action = action;
         }
         
-        // Use the TorrentDisplay component
-        if let Some(action) = TorrentDisplay::draw(ui, &mut ui_state) {
+        // Use the TorrentDisplay component - Use full path
+        if let Some(action) = torrent_display::TorrentDisplay::draw(ui, &mut app.ui_state) {
             // Only override if None
             if matches!(ui_action, UiAction::None) {
                 ui_action = action;
@@ -207,8 +228,8 @@ pub fn draw_ui(app: &mut MyApp, ctx: &egui::Context) {
         }
     });
     
-    // Draw modal dialogs if any
-    if let Some(action) = modals::draw_modals(ctx, &ui_state) {
+    // Draw modal dialogs if any - Use full path
+    if let Some(action) = modals::draw_modals(ctx, &app.ui_state) {
         // Modal actions take priority
         ui_action = action;
     }

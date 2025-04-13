@@ -7,7 +7,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
 use crate::config::get_cached_torrent_path;
-use crate::ui::SyncStatus;
+use crate::ui::utils::SyncStatus;
 use super::messages::SyncEvent;
 
 /// Helper function to send any event to UI

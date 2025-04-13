@@ -6,7 +6,7 @@
 // - Monitoring torrent status for sync purposes (e.g., completion)
 
 use crate::config::AppConfig;
-use crate::ui::SyncStatus;
+use crate::ui::utils::SyncStatus;
 use crate::sync::messages::SyncEvent;
 use anyhow::{Context, Result};
 use librqbit::{AddTorrent, AddTorrentOptions};
@@ -17,7 +17,7 @@ use super::utils::send_sync_status_event;
 // Function to manage the torrent task based on config
 pub async fn manage_torrent_task(
     app_config: &AppConfig,
-    api: &librqbit::Api,
+    api: &librqbit::api::Api,
     ui_tx: &mpsc::UnboundedSender<SyncEvent>,
     current_id_to_forget: Option<usize>,
     torrent_content: Vec<u8>,

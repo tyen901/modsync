@@ -2,11 +2,12 @@
 
 //! Operations related to the remote torrent state
 
-use anyhow::Result;
+use crate::config::AppConfig;
+use reqwest;
 use tokio::sync::mpsc;
 
-use crate::config::{AppConfig, get_cached_torrent_path};
-use crate::ui::SyncStatus;
+use crate::config::get_cached_torrent_path;
+use crate::ui::utils::SyncStatus;
 
 use super::local::refresh_managed_torrent_status_event;
 use super::messages::SyncEvent;
@@ -191,19 +192,3 @@ pub async fn direct_download_and_compare(
         }
     }
 }
-
-/// Function to test if a remote has an update
-/// Returns a tuple of (has update, remote content bytes or None)
-#[allow(unused)]
-pub async fn check_remote_for_updates(
-    _config: &AppConfig,
-    _api: &librqbit::Api,
-    _current: Option<&[u8]>,
-) -> Result<(bool, Option<Vec<u8>>), String> {
-    // This is a placeholder for the actual implementation
-    // We'll compare the remote torrent with the current one (if available)
-    // and return a tuple with (has_update, optional_content)
-    
-    // For now, just return no update
-    Ok((false, None))
-} 

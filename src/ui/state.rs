@@ -40,6 +40,19 @@ pub struct TorrentStats {
     pub time_remaining: Option<String>,
 }
 
+/// Represents the available tabs in the torrent display
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TorrentTab {
+    Details,
+    Files,
+}
+
+impl Default for TorrentTab {
+    fn default() -> Self {
+        Self::Details
+    }
+}
+
 /// UI State contains all the data needed by the UI components
 #[derive(Debug)]
 pub struct UiState {
@@ -66,6 +79,9 @@ pub struct UiState {
     
     // Refresh timing
     pub last_update: Option<Instant>,
+    
+    // Torrent display tab state
+    pub torrent_tab_state: TorrentTab,
 }
 
 impl Default for UiState {
@@ -81,6 +97,7 @@ impl Default for UiState {
             file_tree: TorrentFileTree::default(),
             modal_state: ModalState::None,
             last_update: None,
+            torrent_tab_state: TorrentTab::default(),
         }
     }
 }
@@ -95,6 +112,7 @@ impl UiState {
             config_url,
             config_path: config_path.clone(),
             download_path: PathBuf::from(&config_path),
+            torrent_tab_state: TorrentTab::default(),
             ..Default::default()
         }
     }

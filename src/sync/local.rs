@@ -3,7 +3,7 @@
 //! Operations related to the local torrent state
 
 use crate::config::AppConfig;
-use crate::ui::SyncStatus;
+use crate::ui::utils::SyncStatus;
 use librqbit::TorrentStatsState;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -44,10 +44,14 @@ pub async fn verify_folder_contents(
                 // Get the expected files list from torrent
                 let expected_files = get_expected_files_from_details(&details);
 
+                let mut has_missing_files = false;
+                
                 // Check for missing files
                 match find_missing_files(&config.download_path, &expected_files) {
                     Ok(missing_files) => {
-                        if !missing_files.is_empty() {
+                        has_missing_files = !missing_files.is_empty();
+                        
+                        if has_missing_files {
                             println!("Sync: Found {} missing files.", missing_files.len());
                             
                             // Notify UI of missing files for user decision
@@ -85,8 +89,16 @@ pub async fn verify_folder_contents(
                             eprintln!("Sync: Failed to send extra files list to UI: {}", e);
                         }
                         
-                        // Status already set above for missing files, or will be set to Idle here
+                        // Set the status appropriately based on whether files were found
                         if has_extra_files {
+                            // Status is already set to Idle if there were extra files
+                            send_sync_status_event(ui_tx, SyncStatus::Idle);
+                        } else if has_missing_files {
+                            // If we have missing files but no extra files, keep LocalActive status
+                            send_sync_status_event(ui_tx, SyncStatus::LocalActive);
+                        } else {
+                            // If both checks passed with no issues, reset to Idle
+                            println!("Sync: Verification completed with no issues. Resetting to Idle state.");
                             send_sync_status_event(ui_tx, SyncStatus::Idle);
                         }
                     }

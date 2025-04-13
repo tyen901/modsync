@@ -1,7 +1,8 @@
 // src/ui/torrent_display.rs
 // Component for displaying information about the single active torrent
 
-use eframe::egui::{self, RichText, ProgressBar, Color32, Ui, Layout, Align, SidePanel, CentralPanel};
+use eframe::egui::{self, RichText, ProgressBar, Color32, Ui, Layout, Align, CollapsingHeader};
+use crate::ui::state::TorrentTab;
 
 /// Represents the torrent display component that shows torrent details
 pub struct TorrentDisplay;
@@ -9,46 +10,133 @@ pub struct TorrentDisplay;
 impl TorrentDisplay {
     /// Draw the torrent details
     pub fn draw(ui: &mut egui::Ui, ui_state: &mut crate::ui::UiState) -> Option<crate::ui::UiAction> {
-        ui.heading("Torrent Status");
-
         // --- Error Display (if any) ---
         if let Some(error) = &ui_state.last_error {
              ui.label(RichText::new(format!("Error: {}", error)).color(Color32::RED));
              ui.add_space(8.0);
         }
 
-        // --- Display sync status ---
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("Sync: {}", ui_state.sync_status.display_text()))
-                .color(ui_state.sync_status.display_color()));
-        });
-        ui.add_space(8.0);
-
         // --- Use the torrent stats from UiState --- 
         if let Some(stats) = &ui_state.torrent_stats {
-            // Main area for torrent details, using a panel layout
-            SidePanel::left("file_tree_panel")
-                .resizable(true)
-                .default_width(250.0)
-                .show_inside(ui, |ui| {
-                     ui.heading("Files");
-                     ui.separator();
-                     if let Some(file_stats) = &ui_state.torrent_files {
-                        // Check if files field exists and has items
-                        if !file_stats.files.is_empty() {
-                            ui_state.file_tree.ui(ui, &file_stats.files);
-                        } else {
-                            ui.label("No file information available.");
+            // Extract all needed data up front to avoid borrowing issues
+            let progress = stats.progress;
+            let state_str = stats.state.clone();
+            let down_speed = stats.download_speed;
+            let up_speed = stats.upload_speed;
+            let torrent_id = stats.id;
+            let total_bytes = stats.total_bytes;
+            let progress_bytes = stats.progress_bytes;
+            let uploaded_bytes = stats.uploaded_bytes;
+            let eta = stats.time_remaining.clone();
+            
+            // Extract file information if available
+            let mut file_name = None;
+            let mut info_hash = None;
+            let mut output_folder = None;
+            let mut file_list = Vec::new();
+            
+            if let Some(file_details) = &ui_state.torrent_files {
+                file_name = file_details.name.clone();
+                info_hash = file_details.info_hash.clone();
+                output_folder = file_details.output_folder.clone();
+                file_list = file_details.files.clone();
+            }
+            
+            // Determine if we should animate the progress bar
+            let should_animate = state_str == "Downloading" || state_str == "Checking Files";
+            
+            // Get the color for the state text
+            let state_color = match state_str.as_str() {
+                "Completed" => Color32::from_rgb(50, 205, 50),  // Lime Green
+                "Downloading" => Color32::GREEN,
+                "Seeding" => Color32::DARK_GREEN,
+                "Paused" => Color32::GRAY,
+                "Checking Files" => Color32::YELLOW,
+                _ if state_str.starts_with("Error") => Color32::RED,
+                _ => Color32::WHITE,
+            };
+            
+            // Main content frame
+            egui::Frame::NONE
+                .fill(ui.style().visuals.widgets.noninteractive.bg_fill)
+                .inner_margin(12.0)
+                .outer_margin(0.0)
+                .corner_radius(8.0)
+                .show(ui, |ui| {
+                    
+                    // 1. Progress bar as window element
+                    ui.add(ProgressBar::new(progress as f32)
+                        .show_percentage()
+                        .animate(should_animate));
+                    
+                    // 2. Status bar directly below progress
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                            ui.label("Status: ");
+                            ui.label(RichText::new(&state_str).color(state_color).strong());
+                        });
+                    });
+                    
+                    // 3. Connection details bar
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        // Note: We don't have peer count in our current stats
+                        // Could be added in a future enhancement
+                        ui.label("Peers: -");
+                        ui.separator();
+                        ui.label(format!("Download: {}", crate::ui::utils::format_speed(down_speed)));
+                        ui.separator();
+                        ui.label(format!("Upload: {}", crate::ui::utils::format_speed(up_speed)));
+                    });
+                    
+                    ui.add_space(8.0);
+                    
+                    // 4. Tabs - Simple buttons rather than complex widgets
+                    ui.horizontal(|ui| {
+                        // Read the current tab state directly for comparison
+                        let is_details_selected = matches!(ui_state.torrent_tab_state, TorrentTab::Details);
+                        let is_files_selected = matches!(ui_state.torrent_tab_state, TorrentTab::Files);
+                        
+                        // Use selectable_label for tabs, directly updating ui_state
+                        if ui.selectable_label(is_details_selected, "Details").clicked() {
+                            ui_state.torrent_tab_state = TorrentTab::Details;
                         }
-                     } else {
-                        ui.label("No file information available.");
-                     }
-                });
+                        
+                        if ui.selectable_label(is_files_selected, "Files").clicked() {
+                            ui_state.torrent_tab_state = TorrentTab::Files;
+                        }
+                    });
+                    
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
 
-            CentralPanel::default().show_inside(ui, |ui| {
-                // Pass stats and file details to the main info drawing function
-                Self::draw_torrent_stats_and_details(ui, stats, ui_state.torrent_files.as_ref());
-            });
+                    // Display tab content based on the *current* selected tab state
+                    match ui_state.torrent_tab_state {
+                        TorrentTab::Details => {
+                            // Details tab content
+                            Self::draw_details_content(
+                                ui, 
+                                torrent_id, 
+                                total_bytes, 
+                                progress, 
+                                progress_bytes, 
+                                uploaded_bytes, 
+                                down_speed, 
+                                up_speed, 
+                                &eta, 
+                                &file_name, 
+                                &info_hash, 
+                                &output_folder
+                            );
+                        },
+                        TorrentTab::Files => {
+                            // Files tab content
+                            Self::draw_files_content(ui, ui_state, &file_list);
+                        }
+                    }
+                });
 
             // Show last updated time
             ui.add_space(8.0);
@@ -66,106 +154,70 @@ impl TorrentDisplay {
             });
         } else {
             // Display message when no torrent is active
-             CentralPanel::default().show_inside(ui, |ui| {
-                Self::draw_no_torrent_message(ui, ui_state);
-             });
+            Self::draw_no_torrent_message(ui, ui_state);
         }
         
-        None // This component doesn't produce actions
+        None // No longer need to return actions for tab changes
     }
-    
-    /// Draw detailed information using TorrentStats and TorrentFileStats
-    fn draw_torrent_stats_and_details(ui: &mut Ui, stats: &crate::ui::TorrentStats, file_details: Option<&crate::ui::TorrentFileStats>) {
-        let progress = stats.progress;
-        let state_str = &stats.state;
-        let down_speed = stats.download_speed;
-        let up_speed = stats.upload_speed;
-        
-        let total_size = stats.total_bytes;
-        let progress_percentage = progress * 100.0;
-        
-        // Determine if we should animate the progress bar
-        let should_animate = state_str == "Downloading" || state_str == "Checking Files";
-        
-        // Get the color for the state text
-        let state_color = match state_str.as_str() {
-            "Completed" => Color32::from_rgb(50, 205, 50),  // Lime Green
-            "Downloading" => Color32::GREEN,
-            "Seeding" => Color32::DARK_GREEN,
-            "Paused" => Color32::GRAY,
-            "Checking Files" => Color32::YELLOW,
-            _ if state_str.starts_with("Error") => Color32::RED,
-            _ => Color32::WHITE,
-        };
-        
-        egui::Frame::NONE
-            .fill(ui.style().visuals.widgets.noninteractive.bg_fill)
-            .inner_margin(12.0)
-            .outer_margin(0.0)
-            .corner_radius(8.0)
+
+    /// Draw the Details tab content
+    fn draw_details_content(
+        ui: &mut Ui,
+        torrent_id: usize,
+        total_bytes: u64,
+        progress: f64,
+        progress_bytes: u64,
+        uploaded_bytes: u64,
+        download_speed: f64,
+        upload_speed: f64,
+        eta: &Option<String>,
+        file_name: &Option<String>,
+        info_hash: &Option<String>,
+        output_folder: &Option<String>,
+    ) {
+        // Basic Information section
+        CollapsingHeader::new("Basic Information")
+            .default_open(true)
             .show(ui, |ui| {
-                // Torrent name and state
-                ui.horizontal(|ui| {
-                    if let Some(file_details) = file_details {
-                        ui.heading(file_details.name.as_deref().unwrap_or("Unknown Torrent"));
-                    } else {
-                        ui.heading(format!("Torrent {}", stats.id));
-                    }
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(RichText::new(&*state_str).color(state_color).strong());
-                        ui.label("Status:");
-                    });
-                });
-                ui.add_space(4.0);
+                Self::info_row(ui, "Torrent ID", &format!("{}", torrent_id));
+                if let Some(name) = file_name {
+                    Self::info_row(ui, "Name", name);
+                }
+                if let Some(hash) = info_hash {
+                    Self::info_row(ui, "Info Hash", hash);
+                }
+                Self::info_row(ui, "Size", &crate::ui::utils::format_size(total_bytes));
+                Self::info_row(ui, "Progress", &format!("{:.2}%", progress * 100.0));
+                if let Some(folder) = output_folder {
+                    Self::info_row(ui, "Output Folder", folder);
+                }
+            });
+        
+        ui.add_space(4.0);
+        
+        // Transfer Information section
+        CollapsingHeader::new("Transfer Information")
+            .default_open(true)
+            .show(ui, |ui| {
+                Self::info_row(ui, "Downloaded", &crate::ui::utils::format_size(progress_bytes));
+                Self::info_row(ui, "Uploaded", &crate::ui::utils::format_size(uploaded_bytes));
+                Self::info_row(ui, "Download Speed", &crate::ui::utils::format_speed(download_speed));
+                Self::info_row(ui, "Upload Speed", &crate::ui::utils::format_speed(upload_speed));
                 
-                // Progress bar
-                ui.add(ProgressBar::new(progress as f32)
-                    .show_percentage()
-                    .animate(should_animate));
-                ui.add_space(4.0);
-                
-                // Stats in a grid layout
-                ui.columns(2, |columns| {
-                    // Left column - Basic info
-                    columns[0].with_layout(Layout::top_down(Align::LEFT), |ui| {
-                        Self::info_section(ui, "Basic Information");
-                        Self::info_row(ui, "Torrent ID", &format!("{}", stats.id));
-                        if let Some(file_details) = file_details {
-                            if let Some(info_hash) = &file_details.info_hash {
-                                Self::info_row(ui, "Info Hash", info_hash);
-                            }
-                        }
-                        Self::info_row(ui, "Size", &crate::ui::utils::format_size(total_size));
-                        Self::info_row(ui, "Progress", &format!("{:.2}%", progress_percentage));
-                        if let Some(file_details) = file_details {
-                            if let Some(output_folder) = &file_details.output_folder {
-                                Self::info_row(ui, "Output Folder", output_folder);
-                            }
-                        }
-                    });
-                    
-                    // Right column - Transfer stats
-                    columns[1].with_layout(Layout::top_down(Align::LEFT), |ui| {
-                        Self::info_section(ui, "Transfer Information");
-                        Self::info_row(ui, "Download Speed", &crate::ui::utils::format_speed(down_speed));
-                        Self::info_row(ui, "Upload Speed", &crate::ui::utils::format_speed(up_speed));
-                        Self::info_row(ui, "Downloaded", &crate::ui::utils::format_size(stats.progress_bytes));
-                        Self::info_row(ui, "Uploaded", &crate::ui::utils::format_size(stats.uploaded_bytes));
-                        
-                        // Display ETA if available
-                        if let Some(eta) = &stats.time_remaining {
-                            let eta_str = eta.clone();
-                            Self::info_row(ui, "ETA", &eta_str);
-                        }
-                    });
-                });
+                // Display ETA if available
+                if let Some(eta_str) = eta {
+                    Self::info_row(ui, "ETA", eta_str);
+                }
             });
     }
     
-    /// Helper to display a section header
-    fn info_section(ui: &mut Ui, title: &str) {
-        ui.label(RichText::new(title).strong().underline());
-        ui.add_space(4.0);
+    /// Draw the Files tab content
+    fn draw_files_content(ui: &mut Ui, ui_state: &mut crate::ui::UiState, file_list: &[(String, u64)]) {
+        if !file_list.is_empty() {
+            ui_state.file_tree.ui(ui, file_list);
+        } else {
+            ui.label("No file information available.");
+        }
     }
     
     /// Helper to display a labeled info row
