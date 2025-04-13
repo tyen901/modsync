@@ -59,6 +59,54 @@ pub fn find_extra_files(
     Ok(extra_files)
 }
 
+/// Checks which expected files from the torrent are missing in the download directory
+/// Returns a HashSet of missing files (relative paths)
+pub fn find_missing_files(
+    download_path: &Path,
+    expected_files: &HashSet<PathBuf>,
+) -> Result<HashSet<PathBuf>> {
+    println!(
+        "Cleaner: Checking for missing files in '{}'...",
+        download_path.display()
+    );
+    
+    let mut missing_files = expected_files.clone();
+    
+    if !download_path.exists() {
+        println!("Cleaner: Download path does not exist, all files are missing.");
+        return Ok(missing_files); // All files are missing
+    }
+    
+    // Check each file in the directory
+    for entry in WalkDir::new(download_path).into_iter().filter_map(|e| e.ok()) {
+        let local_path = entry.path();
+        // Only consider files, skip directories
+        if local_path.is_file() {
+            // Get the path relative to the download directory
+            if let Ok(relative_path) = local_path.strip_prefix(download_path) {
+                let relative_path_buf = relative_path.to_path_buf();
+                // If this file is in the expected set, remove it from missing
+                if missing_files.contains(&relative_path_buf) {
+                    missing_files.remove(&relative_path_buf);
+                }
+            }
+        }
+    }
+    
+    println!(
+        "Cleaner: Missing files check complete. {} out of {} expected files are missing.",
+        missing_files.len(),
+        expected_files.len()
+    );
+    
+    // List the missing files for debugging
+    for missing in &missing_files {
+        println!("Cleaner: Missing file: {}", missing.display());
+    }
+    
+    Ok(missing_files)
+}
+
 // Helper function (potentially moved here from sync::state or utils)
 // To parse TorrentDetailsResponse and get expected relative paths
 use librqbit::api::TorrentDetailsResponse;

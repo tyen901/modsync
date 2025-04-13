@@ -10,7 +10,7 @@ use crate::config::AppConfig;
 use crate::ui::SyncStatus;
 
 use super::cleaner::{find_extra_files, get_expected_files_from_details};
-use super::local::{delete_files, refresh_managed_torrent_status_event, verify_folder_contents};
+use super::local::{delete_files, refresh_managed_torrent_status_event, verify_folder_contents, fix_missing_files};
 use super::messages::{SyncCommand, SyncEvent};
 use super::remote::{apply_remote_update, direct_download_and_compare};
 use super::types::{LocalTorrentState, RemoteTorrentState, SyncState};
@@ -84,7 +84,11 @@ pub async fn run_sync_manager(
                     }
                     SyncCommand::VerifyFolder => {
                         println!("Sync: Folder verification requested");
-                        verify_folder_contents(&current_config, &state, &api, &ui_tx).await;
+                        verify_folder_contents(&current_config, &mut state, &api, &ui_tx).await;
+                    },
+                    SyncCommand::FixMissingFiles => {
+                        println!("Sync: Fix missing files requested");
+                        fix_missing_files(&current_config, &mut state, &api, &ui_tx).await;
                     },
                     SyncCommand::DeleteFiles(files_to_delete) => {
                         println!("Sync: Deletion requested for {} files", files_to_delete.len());

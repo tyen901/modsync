@@ -6,6 +6,7 @@ use crate::config::AppConfig;
 use crate::ui::SyncStatus;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::collections::HashSet;
 
 /// Commands that can be sent from the UI to the Sync Manager
 #[derive(Debug)]
@@ -24,6 +25,9 @@ pub enum SyncCommand {
     
     /// Download and compare a torrent from the specified URL
     DownloadAndCompare(String),
+    
+    /// Fix missing files by restarting the torrent
+    FixMissingFiles,
 }
 
 /// Events that can be sent from the Sync Manager to the UI
@@ -47,4 +51,7 @@ pub enum SyncEvent {
     
     /// Notification that a remote update is available
     RemoteUpdateFound(Vec<u8>),
+    
+    /// Notification about missing files found in the download directory
+    MissingFilesFound(HashSet<PathBuf>),
 } 

@@ -9,15 +9,17 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use super::cleaner::{find_extra_files, get_expected_files_from_details};
+use super::cleaner::{find_extra_files, find_missing_files, get_expected_files_from_details};
 use super::messages::SyncEvent;
 use super::types::{LocalTorrentState, SyncState};
 use super::utils::send_sync_status_event;
+use super::torrent::manage_torrent_task;
+use crate::config::get_cached_torrent_path;
 
 /// Function to verify local folder contents
 pub async fn verify_folder_contents(
     config: &AppConfig,
-    state: &SyncState,
+    state: &mut SyncState,  // Changed to mutable reference to update state
     api: &librqbit::Api,
     ui_tx: &mpsc::UnboundedSender<SyncEvent>,
 ) {
@@ -42,15 +44,51 @@ pub async fn verify_folder_contents(
                 // Get the expected files list from torrent
                 let expected_files = get_expected_files_from_details(&details);
 
-                // Check for extra files in the download directory
+                // Check for missing files
+                match find_missing_files(&config.download_path, &expected_files) {
+                    Ok(missing_files) => {
+                        if !missing_files.is_empty() {
+                            println!("Sync: Found {} missing files.", missing_files.len());
+                            
+                            // Notify UI of missing files for user decision
+                            if let Err(e) = ui_tx.send(SyncEvent::MissingFilesFound(missing_files.clone())) {
+                                eprintln!("Sync: Failed to send missing files list to UI: {}", e);
+                                send_sync_status_event(ui_tx, SyncStatus::Error(format!("Failed to send missing files notification: {}", e)));
+                                return;
+                            }
+                            
+                            // Set status to indicate missing files
+                            send_sync_status_event(ui_tx, SyncStatus::LocalActive);
+                        } else {
+                            println!("Sync: No missing files found. All expected files are present.");
+                        }
+                    },
+                    Err(e) => {
+                        let err_msg = format!("Failed to check for missing files: {}", e);
+                        eprintln!("Sync: {}", err_msg);
+                        let _ = ui_tx.send(SyncEvent::Error(err_msg.clone()));
+                        send_sync_status_event(ui_tx, SyncStatus::Error(err_msg));
+                        return;
+                    }
+                }
+
+                // Proceed with checking for extra files
                 match find_extra_files(&config.download_path, &expected_files) {
                     Ok(extra_files) => {
                         println!("Sync: Found {} extra files in directory", extra_files.len());
+                        
+                        // Check if there are extra files before sending
+                        let has_extra_files = !extra_files.is_empty();
+                        
                         // Notify UI of extra files for potential deletion
                         if let Err(e) = ui_tx.send(SyncEvent::ExtraFilesFound(extra_files)) {
                             eprintln!("Sync: Failed to send extra files list to UI: {}", e);
                         }
-                        send_sync_status_event(ui_tx, SyncStatus::Idle);
+                        
+                        // Status already set above for missing files, or will be set to Idle here
+                        if has_extra_files {
+                            send_sync_status_event(ui_tx, SyncStatus::Idle);
+                        }
                     }
                     Err(e) => {
                         let err_msg = format!("Failed to find extra files: {}", e);
@@ -69,6 +107,84 @@ pub async fn verify_folder_contents(
         }
     } else {
         let err_msg = "No active torrent to verify against".to_string();
+        eprintln!("Sync: {}", err_msg);
+        let _ = ui_tx.send(SyncEvent::Error(err_msg.clone()));
+        send_sync_status_event(ui_tx, SyncStatus::Error(err_msg));
+    }
+}
+
+/// Function to fix missing files by restarting the torrent
+pub async fn fix_missing_files(
+    config: &AppConfig,
+    state: &mut SyncState,
+    api: &librqbit::Api,
+    ui_tx: &mpsc::UnboundedSender<SyncEvent>,
+) {
+    // Only proceed if we have an active torrent
+    if let LocalTorrentState::Active { id } = state.local {
+        println!("Sync: Attempting to fix missing files by restarting torrent ID {}", id);
+        send_sync_status_event(ui_tx, SyncStatus::UpdatingTorrent);
+        
+        // Get cached torrent file for restarting
+        match get_cached_torrent_path() {
+            Ok(cached_path) => {
+                match tokio::fs::read(&cached_path).await {
+                    Ok(torrent_content) => {
+                        // Restart the torrent with manage_torrent_task
+                        let restart_result = manage_torrent_task(
+                            config,
+                            api,
+                            ui_tx,
+                            Some(id), // Current ID to forget
+                            torrent_content,
+                        ).await;
+                        
+                        match restart_result {
+                            Ok(new_id) => {
+                                println!("Sync: Torrent restarted successfully to download missing files. New ID: {:?}", new_id);
+                                
+                                // Update the state with the new torrent ID
+                                state.local = match new_id {
+                                    Some(new_torrent_id) => {
+                                        // Send torrent added event with the new ID
+                                        let _ = ui_tx.send(SyncEvent::TorrentAdded(new_torrent_id));
+                                        
+                                        // Update status for the new torrent
+                                        refresh_managed_torrent_status_event(api, ui_tx, new_torrent_id);
+                                        
+                                        LocalTorrentState::Active { id: new_torrent_id }
+                                    },
+                                    None => LocalTorrentState::NotLoaded,
+                                };
+                            },
+                            Err(e) => {
+                                let err_msg = format!("Failed to restart torrent to download missing files: {}", e);
+                                eprintln!("Sync: {}", err_msg);
+                                let _ = ui_tx.send(SyncEvent::Error(err_msg.clone()));
+                                send_sync_status_event(ui_tx, SyncStatus::Error(err_msg));
+                                
+                                // The old torrent was removed but we failed to add a new one
+                                state.local = LocalTorrentState::NotLoaded;
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        let err_msg = format!("Failed to read cached torrent file: {}", e);
+                        eprintln!("Sync: {}", err_msg);
+                        let _ = ui_tx.send(SyncEvent::Error(err_msg.clone()));
+                        send_sync_status_event(ui_tx, SyncStatus::Error(err_msg));
+                    }
+                }
+            },
+            Err(e) => {
+                let err_msg = format!("Failed to get cached torrent path: {}", e);
+                eprintln!("Sync: {}", err_msg);
+                let _ = ui_tx.send(SyncEvent::Error(err_msg.clone()));
+                send_sync_status_event(ui_tx, SyncStatus::Error(err_msg));
+            }
+        }
+    } else {
+        let err_msg = "No active torrent to fix missing files".to_string();
         eprintln!("Sync: {}", err_msg);
         let _ = ui_tx.send(SyncEvent::Error(err_msg.clone()));
         send_sync_status_event(ui_tx, SyncStatus::Error(err_msg));

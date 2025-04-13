@@ -8,6 +8,7 @@ use librqbit::api::{Api, TorrentStats};
 use tokio::sync::mpsc;
 use std::path::PathBuf; // Import PathBuf
 use std::sync::Arc;
+use std::collections::HashSet;
 
 // Main application struct
 pub struct MyApp {
@@ -24,6 +25,7 @@ pub struct MyApp {
     pub(crate) last_error: Option<String>,  // To display errors in the UI
     pub(crate) sync_status: SyncStatus,     // Current status of the sync task
     pub(crate) extra_files_to_prompt: Option<Vec<PathBuf>>, // Files for delete prompt
+    pub(crate) missing_files_to_prompt: Option<HashSet<PathBuf>>, // Missing files for prompt
     pub(crate) file_tree: crate::ui::torrent_file_tree::TorrentFileTree, // Add state for the file tree
     // New fields for remote update detection
     pub(crate) remote_update: Option<Vec<u8>>, // Torrent content from remote update
@@ -57,6 +59,7 @@ impl MyApp {
             last_error: None,
             sync_status: SyncStatus::Idle, // Start in idle state
             extra_files_to_prompt: None, // Initialize prompt state
+            missing_files_to_prompt: None, // Initialize missing files prompt state
             file_tree: Default::default(), // Initialize file tree state
             remote_update: None, // Initialize remote update state
             last_refresh: None, // Initialize last refresh state
@@ -105,6 +108,14 @@ impl eframe::App for MyApp {
                         self.extra_files_to_prompt = None;
                     } else {
                         self.extra_files_to_prompt = Some(files);
+                    }
+                }
+                SyncEvent::MissingFilesFound(files) => {
+                    println!("UI received MissingFilesFound: {} files", files.len());
+                    if files.is_empty() {
+                        self.missing_files_to_prompt = None;
+                    } else {
+                        self.missing_files_to_prompt = Some(files);
                     }
                 }
                 SyncEvent::RemoteUpdateFound(torrent_data) => {

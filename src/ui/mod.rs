@@ -58,12 +58,74 @@ pub fn draw_ui(app: &mut MyApp, ctx: &egui::Context) {
         // Use the TorrentDisplay component
         TorrentDisplay::draw(ui, app);
         
+        // Draw the missing files prompt if needed
+        draw_missing_files_prompt(ctx, ui, app);
+        
         // Draw the extra files prompt if needed
         draw_extra_files_prompt(ctx, ui, app);
         
         // Draw the remote update prompt if needed
         draw_remote_update_prompt(ctx, ui, app);
     });
+}
+
+/// Draw the prompt for missing files if any were found
+fn draw_missing_files_prompt(ctx: &egui::Context, _ui: &mut egui::Ui, app: &mut MyApp) {
+    let mut should_fix = false;
+    let mut should_ignore = false;
+    
+    if let Some(missing_files) = &app.missing_files_to_prompt {
+        // Display a modal dialog listing the missing files and asking what to do
+        egui::Window::new("Missing Files Detected")
+            .id(egui::Id::new("missing_files_prompt")) // Ensure unique ID
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.label(format!("{} expected files are missing from the download folder:", missing_files.len()));
+                
+                // Create a scrollable area for the files
+                egui::ScrollArea::vertical().max_height(300.0).show(ui, |ui| {
+                    for file_path in missing_files {
+                        ui.label(file_path.display().to_string());
+                    }
+                });
+                
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Fix Missing Files").clicked() {
+                        // Defer the action by setting a flag
+                        should_fix = true;
+                    }
+                    if ui.button("Ignore").clicked() {
+                        // Defer the action by setting a flag
+                        should_ignore = true;
+                    }
+                });
+                
+                ui.label(RichText::new("Note: Fixing missing files will restart the torrent and re-download any missing files.").italics().small());
+            });
+    }
+    
+    // Perform actions *after* the window and the immutable borrow have finished
+    if should_fix {
+        fix_missing_files(app);
+    }
+
+    if should_ignore {
+        app.missing_files_to_prompt = None;
+    }
+}
+
+/// Function to send the fix missing files command
+fn fix_missing_files(app: &mut MyApp) {
+    println!("Action: Fix missing files requested");
+    if let Err(e) = app.sync_cmd_tx.send(crate::sync::SyncCommand::FixMissingFiles) {
+        eprintln!("Action: Failed to send FixMissingFiles command: {}", e);
+        let _ = app.ui_tx.send(crate::sync::SyncEvent::Error(format!("Failed to send fix command: {}", e)));
+    }
+    // Clear the prompt after sending the command
+    app.missing_files_to_prompt = None;
 }
 
 /// Draw the prompt to delete extra files if any were found
@@ -162,4 +224,5 @@ fn draw_remote_update_prompt(ctx: &egui::Context, _ui: &mut egui::Ui, app: &mut 
     }
 }
 
+// Action helper functions removed. They are now in src/actions.rs. 
 // Action helper functions removed. They are now in src/actions.rs. 
