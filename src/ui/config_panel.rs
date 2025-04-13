@@ -26,6 +26,8 @@ impl ConfigPanel {
             ui.text_edit_singleline(&mut ui_state.config_path);
         });
 
+        ui.separator();
+
         // Buttons row 1 - Configuration
         ui.horizontal(|ui| {
             // Save config button

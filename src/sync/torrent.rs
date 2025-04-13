@@ -11,6 +11,8 @@ use crate::sync::messages::SyncEvent;
 use anyhow::{Context, Result};
 use librqbit::{AddTorrent, AddTorrentOptions};
 use tokio::sync::mpsc;
+use librqbit::limits::LimitsConfig;
+use std::num::NonZeroU32;
 
 use super::utils::send_sync_status_event;
 
@@ -71,11 +73,34 @@ pub async fn manage_torrent_task(
     send_sync_status_event(ui_tx, SyncStatus::UpdatingTorrent);
 
     let add_request = AddTorrent::from_bytes(torrent_content);
+    
+    // Create a LimitsConfig based on app settings
+    let ratelimits = LimitsConfig {
+        // Convert KB/s to B/s (bytes per second) and to NonZeroU32
+        download_bps: app_config.max_download_speed.and_then(|s| {
+            let value = (s * 1024) as u32;
+            NonZeroU32::new(value)
+        }),
+        upload_bps: app_config.max_upload_speed.and_then(|s| {
+            let value = (s * 1024) as u32;
+            NonZeroU32::new(value)
+        }),
+    };
+    
     let options = AddTorrentOptions {
         output_folder: Some(app_config.download_path.to_string_lossy().into_owned()),
         overwrite: true, // Important: ensures librqbit checks existing files
+        paused: !app_config.should_seed, // Opposite of should_seed
+        ratelimits,
         ..Default::default()
     };
+
+    println!(
+        "Sync: Applying settings - Seeding: {}, Upload limit: {:?} KB/s, Download limit: {:?} KB/s",
+        app_config.should_seed,
+        app_config.max_upload_speed,
+        app_config.max_download_speed
+    );
 
     let response = api
         .api_add_torrent(add_request, Some(options))

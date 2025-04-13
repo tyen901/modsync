@@ -8,11 +8,12 @@ use crate::ui::utils::SyncStatus;
 use crate::ui::torrent_file_tree::TorrentFileTree;
 
 /// Represents a modal dialog state
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ModalState {
     MissingFiles(HashSet<PathBuf>),
     ExtraFiles(Vec<PathBuf>),
     RemoteUpdateAvailable,
+    Settings,
     None,
 }
 
@@ -61,6 +62,13 @@ pub struct UiState {
     pub config_path: String,
     pub download_path: PathBuf,
     
+    // Profile settings
+    pub should_seed: bool,
+    pub max_upload_speed: Option<u64>,
+    pub max_download_speed: Option<u64>,
+    pub max_upload_speed_str: String,
+    pub max_download_speed_str: String,
+    
     // Error state
     pub last_error: Option<String>,
     
@@ -90,6 +98,11 @@ impl Default for UiState {
             config_url: String::new(),
             config_path: String::new(),
             download_path: PathBuf::new(),
+            should_seed: true,
+            max_upload_speed: None,
+            max_download_speed: None,
+            max_upload_speed_str: String::new(),
+            max_download_speed_str: String::new(),
             last_error: None,
             sync_status: SyncStatus::Idle,
             torrent_stats: None,
@@ -107,11 +120,19 @@ impl UiState {
     pub fn new(
         config_url: String,
         config_path: String,
+        should_seed: bool,
+        max_upload_speed: Option<u64>,
+        max_download_speed: Option<u64>,
     ) -> Self {
         Self {
             config_url,
             config_path: config_path.clone(),
             download_path: PathBuf::from(&config_path),
+            should_seed,
+            max_upload_speed,
+            max_download_speed,
+            max_upload_speed_str: max_upload_speed.map_or(String::new(), |v| v.to_string()),
+            max_download_speed_str: max_download_speed.map_or(String::new(), |v| v.to_string()),
             torrent_tab_state: TorrentTab::default(),
             ..Default::default()
         }
@@ -131,10 +152,19 @@ impl UiState {
     pub fn time_since_update(&self) -> Option<std::time::Duration> {
         self.last_update.map(|time| Instant::now().duration_since(time))
     }
+    
+    /// Parse speed strings to Option<u64>
+    pub fn parse_speed_limit(&self, speed_str: &str) -> Option<u64> {
+        if speed_str.is_empty() {
+            None
+        } else {
+            speed_str.parse::<u64>().ok()
+        }
+    }
 }
 
 /// UI Actions represent all possible UI interactions
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UiAction {
     // Configuration actions
     SaveConfig,
@@ -147,10 +177,15 @@ pub enum UiAction {
     DeleteExtraFiles,
     ApplyRemoteUpdate,
     
+    // Modal actions
+    ShowSettingsModal,
+    SaveSettingsAndDismiss,
+    
     // Modal dismissal actions
     DismissMissingFilesModal,
     DismissExtraFilesModal,
     DismissRemoteUpdateModal,
+    DismissSettingsModal,
     
     // No action
     None,

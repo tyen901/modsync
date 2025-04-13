@@ -20,6 +20,38 @@ pub fn save_config_changes(app: &mut MyApp) -> Result<()> {
     app.config.torrent_url = app.config_edit_url.clone();
     let path_str = app.config_edit_path_str.clone();
     app.config.download_path = PathBuf::from(path_str);
+    
+    // Update the profile settings
+    app.config.should_seed = app.config_edit_should_seed;
+    
+    // Parse the speed limits
+    app.config.max_upload_speed = if app.config_edit_max_upload_speed_str.trim().is_empty() {
+        None
+    } else {
+        match app.config_edit_max_upload_speed_str.parse::<u64>() {
+            Ok(speed) => Some(speed),
+            Err(e) => {
+                let err_msg = format!("Invalid upload speed: {}", e);
+                println!("Action: {}", err_msg);
+                app.last_error = Some(err_msg);
+                return Err(anyhow!("Invalid upload speed value"));
+            }
+        }
+    };
+    
+    app.config.max_download_speed = if app.config_edit_max_download_speed_str.trim().is_empty() {
+        None
+    } else {
+        match app.config_edit_max_download_speed_str.parse::<u64>() {
+            Ok(speed) => Some(speed),
+            Err(e) => {
+                let err_msg = format!("Invalid download speed: {}", e);
+                println!("Action: {}", err_msg);
+                app.last_error = Some(err_msg);
+                return Err(anyhow!("Invalid download speed value"));
+            }
+        }
+    };
 
     // Clone for async block
     let config_clone = app.config.clone();
@@ -147,6 +179,38 @@ pub(crate) fn update_from_remote(app: &mut MyApp) {
     // Update the config in MyApp state
     app.config.torrent_url = new_url.clone();
     app.config.download_path = new_path;
+    
+    // Update profile settings
+    app.config.should_seed = app.config_edit_should_seed;
+    
+    // Parse speed limits
+    app.config.max_upload_speed = if app.config_edit_max_upload_speed_str.trim().is_empty() {
+        None
+    } else {
+        match app.config_edit_max_upload_speed_str.parse::<u64>() {
+            Ok(speed) => Some(speed),
+            Err(e) => {
+                let err_msg = format!("Invalid upload speed: {}", e);
+                let _ = app.ui_tx.send(SyncEvent::Error(err_msg.clone()));
+                app.last_error = Some(err_msg);
+                return;
+            }
+        }
+    };
+    
+    app.config.max_download_speed = if app.config_edit_max_download_speed_str.trim().is_empty() {
+        None
+    } else {
+        match app.config_edit_max_download_speed_str.parse::<u64>() {
+            Ok(speed) => Some(speed),
+            Err(e) => {
+                let err_msg = format!("Invalid download speed: {}", e);
+                let _ = app.ui_tx.send(SyncEvent::Error(err_msg.clone()));
+                app.last_error = Some(err_msg);
+                return;
+            }
+        }
+    };
     
     // Clone the config to save
     let config_to_save = app.config.clone();

@@ -23,6 +23,9 @@ pub struct MyApp {
     // Temporary fields for UI input before saving
     pub(crate) config_edit_url: String,       // Temp storage for URL input
     pub(crate) config_edit_path_str: String, // Temp storage for path input
+    pub(crate) config_edit_should_seed: bool, // Temp storage for should_seed input
+    pub(crate) config_edit_max_upload_speed_str: String, // Temp storage for max upload speed input
+    pub(crate) config_edit_max_download_speed_str: String, // Temp storage for max download speed input
     pub(crate) last_error: Option<String>,  // To display errors in the UI
     pub(crate) sync_status: SyncStatus,     // Current status of the sync task
     pub(crate) extra_files_to_prompt: Option<Vec<PathBuf>>, // Files for delete prompt
@@ -49,11 +52,19 @@ impl MyApp {
             .download_path
             .to_string_lossy()
             .into_owned();
+        let config_edit_should_seed = initial_config.should_seed;
+        let config_edit_max_upload_speed_str = initial_config.max_upload_speed
+            .map_or_else(String::new, |v| v.to_string());
+        let config_edit_max_download_speed_str = initial_config.max_download_speed
+            .map_or_else(String::new, |v| v.to_string());
         
         // Initialize persistent UI state
         let initial_ui_state = UiState::new(
             config_edit_url.clone(), 
-            config_edit_path_str.clone()
+            config_edit_path_str.clone(),
+            config_edit_should_seed,
+            initial_config.max_upload_speed,
+            initial_config.max_download_speed,
         );
         // Potentially set other initial UI state fields here if needed
 
@@ -66,6 +77,9 @@ impl MyApp {
             config: initial_config,
             config_edit_url,
             config_edit_path_str,
+            config_edit_should_seed,
+            config_edit_max_upload_speed_str,
+            config_edit_max_download_speed_str,
             last_error: None,
             sync_status: SyncStatus::Idle, // Start in idle state
             extra_files_to_prompt: None, // Initialize prompt state
