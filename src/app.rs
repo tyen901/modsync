@@ -1,20 +1,22 @@
 // src/app.rs
 
 use crate::config::AppConfig;
-use crate::ui::{UiMessage, SyncStatus};
+use crate::ui::SyncStatus;
+use crate::sync::{SyncCommand, SyncEvent};
 use eframe::egui;
 use librqbit::api::{Api, TorrentStats};
 use tokio::sync::mpsc;
 use std::path::PathBuf; // Import PathBuf
+use std::sync::Arc;
 
 // Main application struct
 pub struct MyApp {
     pub(crate) api: Api, // librqbit API handle
-    pub(crate) managed_torrent_stats: Option<(usize, TorrentStats)>,
-    pub(crate) ui_tx: mpsc::UnboundedSender<UiMessage>,            // Channel Sender for UI updates
-    pub(crate) ui_rx: mpsc::UnboundedReceiver<UiMessage>,          // Channel Receiver for UI updates
-    // Added sender for config updates to sync task
-    pub(crate) sync_cmd_tx: mpsc::UnboundedSender<UiMessage>,         // Store the sync command sender
+    pub(crate) managed_torrent_stats: Option<(usize, Arc<TorrentStats>)>,
+    // Update channels to use our new message types
+    pub(crate) ui_rx: mpsc::UnboundedReceiver<SyncEvent>,          // Receive events from sync manager
+    pub(crate) sync_cmd_tx: mpsc::UnboundedSender<SyncCommand>,    // Send commands to sync manager
+    pub(crate) ui_tx: mpsc::UnboundedSender<SyncEvent>,            // For UI thread to send events
     pub(crate) config: AppConfig,                                     // Current application config
     // Temporary fields for UI input before saving
     pub(crate) config_edit_url: String,       // Temp storage for URL input
@@ -25,15 +27,17 @@ pub struct MyApp {
     pub(crate) file_tree: crate::ui::torrent_file_tree::TorrentFileTree, // Add state for the file tree
     // New fields for remote update detection
     pub(crate) remote_update: Option<Vec<u8>>, // Torrent content from remote update
+    // Time tracking
+    last_refresh: Option<std::time::Instant>, // Track when we last refreshed stats
 }
 
 impl MyApp {
     // Creates a new instance of the application
     pub fn new(
         api: Api,
-        ui_tx: mpsc::UnboundedSender<UiMessage>,
-        ui_rx: mpsc::UnboundedReceiver<UiMessage>,
-        sync_cmd_tx: mpsc::UnboundedSender<UiMessage>,
+        ui_tx: mpsc::UnboundedSender<SyncEvent>,
+        ui_rx: mpsc::UnboundedReceiver<SyncEvent>,
+        sync_cmd_tx: mpsc::UnboundedSender<SyncCommand>,
         initial_config: AppConfig,
     ) -> Self {
         let config_edit_url = initial_config.torrent_url.clone();
@@ -55,6 +59,7 @@ impl MyApp {
             extra_files_to_prompt: None, // Initialize prompt state
             file_tree: Default::default(), // Initialize file tree state
             remote_update: None, // Initialize remote update state
+            last_refresh: None, // Initialize last refresh state
         }
     }
 }
@@ -66,24 +71,24 @@ impl eframe::App for MyApp {
         ctx.request_repaint_after(std::time::Duration::from_secs(1));
         
         // Process any messages received from the sync task via ui_rx
-        while let Ok(message) = self.ui_rx.try_recv() {
-            match message {
-                UiMessage::UpdateManagedTorrent(torrent_stats_opt) => {
+        while let Ok(event) = self.ui_rx.try_recv() {
+            match event {
+                SyncEvent::ManagedTorrentUpdate(torrent_stats_opt) => {
                     println!("UI received managed torrent stats update: {:?}", torrent_stats_opt.as_ref().map(|(id, _)| id));
                     self.managed_torrent_stats = torrent_stats_opt;
                     self.last_error = None; 
                 }
-                UiMessage::TorrentAdded(id) => {
+                SyncEvent::TorrentAdded(id) => {
                     println!("UI notified: Torrent {} added/managed", id);
                     self.last_error = None;
                     self.refresh_current_torrent_stats();
                 }
-                UiMessage::Error(err_msg) => {
+                SyncEvent::Error(err_msg) => {
                     eprintln!("UI received error: {}", err_msg);
                     self.last_error = Some(err_msg.clone());
                     self.sync_status = SyncStatus::Error(err_msg);
                 }
-                UiMessage::UpdateSyncStatus(status) => {
+                SyncEvent::StatusUpdate(status) => {
                     println!("UI received sync status update: {:?}", status);
                     let should_refresh = status == SyncStatus::Idle;
                     self.sync_status = status;
@@ -94,7 +99,7 @@ impl eframe::App for MyApp {
                         self.refresh_current_torrent_stats();
                     }
                 }
-                UiMessage::ExtraFilesFound(files) => {
+                SyncEvent::ExtraFilesFound(files) => {
                     println!("UI received ExtraFilesFound: {} files", files.len());
                     if files.is_empty() {
                         self.extra_files_to_prompt = None;
@@ -102,35 +107,23 @@ impl eframe::App for MyApp {
                         self.extra_files_to_prompt = Some(files);
                     }
                 }
-                UiMessage::RemoteUpdateFound(torrent_data) => {
+                SyncEvent::RemoteUpdateFound(torrent_data) => {
                     println!("UI received RemoteUpdateFound: {} bytes", torrent_data.len());
                     self.remote_update = Some(torrent_data);
                 }
-                // Explicitly ignore command messages that might leak through (shouldn't happen)
-                UiMessage::UpdateConfig(_) |
-                UiMessage::TriggerFolderVerify |
-                UiMessage::DeleteExtraFiles(_) |
-                UiMessage::ApplyRemoteUpdate(_) |
-                UiMessage::ForceDownloadAndCompare(_) => {
-                    eprintln!("UI received unexpected command message: {:?}. Ignoring.", message);
-                } 
             }
         }
         
         // Automatic refresh of current torrent details
         // This ensures we always have fresh torrent stats even if no messages are received
-        static mut LAST_REFRESH: Option<std::time::Instant> = None;
-        
         let now = std::time::Instant::now();
-        let should_refresh = unsafe {
-            match LAST_REFRESH {
-                Some(last) => now.duration_since(last).as_secs() >= 2, // Refresh every 2 seconds
-                None => true
-            }
+        let should_refresh = match self.last_refresh {
+            Some(last) => now.duration_since(last).as_secs() >= 2, // Refresh every 2 seconds
+            None => true
         };
         
         if should_refresh {
-            unsafe { LAST_REFRESH = Some(now); }
+            self.last_refresh = Some(now);
             self.refresh_current_torrent_stats();
         }
 
@@ -149,8 +142,8 @@ impl MyApp {
             // Use api_stats_v1 now
             match self.api.api_stats_v1(torrent_id.into()) {
                 Ok(stats) => {
-                    // Send the updated stats
-                    if let Err(e) = self.ui_tx.send(UiMessage::UpdateManagedTorrent(Some((torrent_id, stats)))) {
+                    // Send the updated stats - wrap in Arc
+                    if let Err(e) = self.ui_tx.send(SyncEvent::ManagedTorrentUpdate(Some((torrent_id, Arc::new(stats))))) {
                         eprintln!("Failed to send torrent stats update: {}", e);
                     }
                 }

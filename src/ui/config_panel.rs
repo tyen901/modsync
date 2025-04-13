@@ -3,7 +3,7 @@
 
 use crate::app::MyApp;
 use crate::actions::{self, save_config_changes, update_from_remote};
-use crate::ui::UiMessage;
+use crate::sync::SyncCommand;
 use eframe::egui::{self, RichText};
 
 /// Component for handling configuration settings
@@ -31,7 +31,7 @@ impl ConfigPanel {
         ui.horizontal(|ui| {
             // Save config button
             if ui.button("Save Configuration").clicked() {
-                save_config_changes(app);
+                handle_save_action(app);
             }
             
             // New button to update from remote URL
@@ -68,7 +68,7 @@ impl ConfigPanel {
             egui::Button::new("Verify Local Files")
         ).clicked() {
             println!("UI: Verify local files requested");
-            if let Err(e) = app.sync_cmd_tx.send(UiMessage::TriggerFolderVerify) {
+            if let Err(e) = app.sync_cmd_tx.send(SyncCommand::VerifyFolder) {
                 eprintln!("UI: Failed to send folder verify request: {}", e);
             }
         }
@@ -100,4 +100,21 @@ impl ConfigPanel {
             );
         });
     }
+}
+
+// Function to handle the save button click
+fn handle_save_action(app: &mut MyApp) {
+    // Basic validation
+    if app.config_edit_url.trim().is_empty() {
+        app.last_error = Some("Remote URL cannot be empty".to_string());
+        return;
+    }
+    
+    if app.config_edit_path_str.trim().is_empty() {
+        app.last_error = Some("Download path cannot be empty".to_string());
+        return;
+    }
+    
+    // Call save function
+    let _ = save_config_changes(app);
 } 

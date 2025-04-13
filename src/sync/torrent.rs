@@ -6,26 +6,19 @@
 // - Monitoring torrent status for sync purposes (e.g., completion)
 
 use crate::config::AppConfig;
-use crate::ui::{UiMessage, SyncStatus};
+use crate::ui::SyncStatus;
+use crate::sync::messages::SyncEvent;
 use anyhow::{Context, Result};
 use librqbit::{AddTorrent, AddTorrentOptions};
 use tokio::sync::mpsc;
 
-// Helper function to send status update to UI (duplicated from state.rs for clarity)
-fn send_sync_status(
-    tx: &mpsc::UnboundedSender<UiMessage>,
-    status: SyncStatus
-) {
-    if let Err(e) = tx.send(UiMessage::UpdateSyncStatus(status)) {
-        eprintln!("Torrent: Failed to send status update to UI: {}", e);
-    }
-}
+use super::utils::send_sync_status_event;
 
 // Function to manage the torrent task based on config
 pub async fn manage_torrent_task(
     app_config: &AppConfig,
     api: &librqbit::Api,
-    ui_tx: &mpsc::UnboundedSender<UiMessage>,
+    ui_tx: &mpsc::UnboundedSender<SyncEvent>,
     current_id_to_forget: Option<usize>,
     torrent_content: Vec<u8>,
 ) -> Result<Option<usize>> {
@@ -39,7 +32,7 @@ pub async fn manage_torrent_task(
     // 1. Forget the old torrent if an ID was provided
     if let Some(id_to_forget) = current_id_to_forget {
         println!("Sync: Forgetting previous torrent ID: {}", id_to_forget);
-        send_sync_status(ui_tx, SyncStatus::UpdatingTorrent);
+        send_sync_status_event(ui_tx, SyncStatus::UpdatingTorrent);
         
         match api
             .api_torrent_action_forget(id_to_forget.into())
@@ -53,7 +46,7 @@ pub async fn manage_torrent_task(
                     id_to_forget,
                     e
                 );
-                 let _ = ui_tx.send(UiMessage::Error(format!("Error forgetting old torrent {}: {}", id_to_forget, e)));
+                 let _ = ui_tx.send(SyncEvent::Error(format!("Error forgetting old torrent {}: {}", id_to_forget, e)));
             }
         }
     }
@@ -68,14 +61,14 @@ pub async fn manage_torrent_task(
     if app_config.download_path.as_os_str().is_empty() {
         println!("Sync: Download path is empty, cannot add torrent.");
         let err_msg = "Download path not configured".to_string();
-        let _ = ui_tx.send(UiMessage::Error(err_msg.clone()));
-        send_sync_status(ui_tx, SyncStatus::Error(err_msg));
+        let _ = ui_tx.send(SyncEvent::Error(err_msg.clone()));
+        send_sync_status_event(ui_tx, SyncStatus::Error(err_msg));
         // Return Ok(None) as no torrent was added
         return Ok(None);
     }
 
     // Notify that we're still updating - librqbit will do the checking internally
-    send_sync_status(ui_tx, SyncStatus::UpdatingTorrent);
+    send_sync_status_event(ui_tx, SyncStatus::UpdatingTorrent);
 
     let add_request = AddTorrent::from_bytes(torrent_content);
     let options = AddTorrentOptions {
@@ -91,18 +84,18 @@ pub async fn manage_torrent_task(
 
     if let Some(id) = response.id {
         println!("Sync: Torrent added successfully with ID: {}", id);
-        let _ = ui_tx.send(UiMessage::TorrentAdded(id));
+        let _ = ui_tx.send(SyncEvent::TorrentAdded(id));
         
         // Return to Idle after adding - state tracking is now separate from torrent state
-        send_sync_status(ui_tx, SyncStatus::Idle);
+        send_sync_status_event(ui_tx, SyncStatus::Idle);
         
         Ok(Some(id))
     } else {
         println!("Sync: Torrent added but no ID returned by API.");
         // Maybe send an error/warning? For now, return Ok(None)
         let err_msg = "Torrent added but API returned no ID".to_string();
-        let _ = ui_tx.send(UiMessage::Error(err_msg.clone()));
-        send_sync_status(ui_tx, SyncStatus::Error(err_msg));
+        let _ = ui_tx.send(SyncEvent::Error(err_msg.clone()));
+        send_sync_status_event(ui_tx, SyncStatus::Error(err_msg));
         Ok(None)
     }
 }

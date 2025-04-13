@@ -1,9 +1,6 @@
 use crate::app::MyApp;
 use eframe::egui::{self, CentralPanel, Color32, RichText};
-use librqbit::api::TorrentStats;
-use std::path::PathBuf;
 use crate::actions; // Import actions module
-use crate::config::AppConfig; // Added import for AppConfig
 
 // Create sub-modules
 mod torrent_display;
@@ -50,25 +47,6 @@ impl SyncStatus {
             SyncStatus::Error(err) => format!("Sync Error: {}", err),
         }
     }
-}
-
-// Enum for messages sent back to the UI thread from background tasks
-#[derive(Debug)]
-pub enum UiMessage {
-    // From UI Actions -> Sync Task
-    UpdateConfig(AppConfig), // Send the whole updated config
-    ForceDownloadAndCompare(String), // URL to download from
-    DeleteExtraFiles(Vec<PathBuf>),
-    ApplyRemoteUpdate(Vec<u8>), // Torrent data to apply
-    TriggerFolderVerify,
-
-    // From Sync Task -> UI
-    UpdateManagedTorrent(Option<(usize, TorrentStats)>),
-    TorrentAdded(usize), // Sent when a new torrent is added/managed
-    Error(String),
-    UpdateSyncStatus(SyncStatus),
-    ExtraFilesFound(Vec<PathBuf>),
-    RemoteUpdateFound(Vec<u8>), // Torrent data found remotely
 }
 
 // Main function to draw the UI

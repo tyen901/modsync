@@ -9,7 +9,7 @@ use app::MyApp;
 use config::{load_config, get_config_path, get_cached_torrent_path};
 use librqbit::{Api, Session, SessionOptions, AddTorrent, AddTorrentOptions};
 use tokio::sync::mpsc;
-use ui::UiMessage;
+use sync::{SyncCommand, SyncEvent};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -92,10 +92,10 @@ async fn main() -> anyhow::Result<()> {
     }
     // --------------------------
 
-    // Create channel for UI communication
-    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<UiMessage>();
-    // Create channel for messages from UI to sync manager
-    let (sync_cmd_tx, sync_cmd_rx) = mpsc::unbounded_channel::<UiMessage>();
+    // Create channels for communication using our new message types
+    let (ui_tx, ui_rx) = mpsc::unbounded_channel::<SyncEvent>();
+    // Create channel for commands from UI to sync manager
+    let (sync_cmd_tx, sync_cmd_rx) = mpsc::unbounded_channel::<SyncCommand>();
 
     // Spawn the sync manager task
     let sync_api = api.clone();
@@ -104,11 +104,11 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(async move {
         println!("Main: Sync manager started in background task");
 
-        if let Err(e) = sync::state::run_sync_manager(
+        if let Err(e) = sync::run_sync_manager(
             sync_config,
             sync_api,
             sync_ui_tx,
-            sync_cmd_rx,      // Pass UI command receiver
+            sync_cmd_rx,      // Pass commands receiver
             initial_torrent_id, // Pass the initial ID
         )
         .await
@@ -126,9 +126,9 @@ async fn main() -> anyhow::Result<()> {
             // Create MyApp instance
             let app_box = Box::new(MyApp::new(
                 api,
-                ui_tx.clone(), // Clone UI sender for initial check
-                ui_rx,
-                sync_cmd_tx.clone(), // Clone sync command sender for initial check
+                ui_tx.clone(), // UI event sender for the UI thread
+                ui_rx,        // UI event receiver
+                sync_cmd_tx.clone(), // Command sender
                 initial_config,
             )) as Box<dyn eframe::App>;
             
