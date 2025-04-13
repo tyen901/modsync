@@ -36,7 +36,7 @@ impl TreeNode {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Debug, Clone)]
 pub struct TorrentFileTree {
     // Potentially add state here if needed, e.g., expanded state cache
     // For now, egui's collapsing header state should be sufficient.

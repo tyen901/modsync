@@ -1,9 +1,6 @@
 // src/ui/config_panel.rs
 // Component for configuration UI
 
-use crate::app::MyApp;
-use crate::actions::{self, save_config_changes, update_from_remote};
-use crate::sync::SyncCommand;
 use eframe::egui::{self, RichText};
 
 /// Component for handling configuration settings
@@ -11,110 +8,91 @@ pub struct ConfigPanel;
 
 impl ConfigPanel {
     /// Draw the configuration panel
-    pub fn draw(ui: &mut egui::Ui, app: &mut MyApp) {
+    pub fn draw(ui: &mut egui::Ui, ui_state: &mut crate::ui::UiState) -> Option<crate::ui::UiAction> {
+        let mut action = None;
+        
         ui.heading("ModSync Configuration");
         ui.separator();
 
         // URL input
         ui.horizontal(|ui| {
             ui.label("Remote Torrent URL:");
-            ui.text_edit_singleline(&mut app.config_edit_url);
+            ui.text_edit_singleline(&mut ui_state.config_url);
         });
         
         // Path input
         ui.horizontal(|ui| {
             ui.label("Local Download Path:");
-            ui.text_edit_singleline(&mut app.config_edit_path_str);
+            ui.text_edit_singleline(&mut ui_state.config_path);
         });
 
         // Buttons row 1 - Configuration
         ui.horizontal(|ui| {
             // Save config button
             if ui.button("Save Configuration").clicked() {
-                handle_save_action(app);
+                action = Some(crate::ui::UiAction::SaveConfig);
             }
             
             // New button to update from remote URL
             if ui.button("Update from Remote").clicked() {
-                update_from_remote(app);
+                action = Some(crate::ui::UiAction::UpdateFromRemote);
             }
         });
         
         // Buttons row 2 - Operations
         ui.horizontal(|ui| {
             // Verify button (only enabled when config is valid)
-            Self::draw_verify_button(ui, app);
+            Self::draw_verify_button(ui, ui_state, &mut action);
 
             // Open folder button (only enabled if path is set)
-            Self::draw_open_folder_button(ui, app);
+            Self::draw_open_folder_button(ui, ui_state, &mut action);
         });
 
         ui.separator();
         
         // Sync status display
-        Self::draw_sync_status(ui, app);
+        Self::draw_sync_status(ui, ui_state);
         
         ui.separator();
+        
+        action
     }
     
     /// Draw the verify local files button
-    fn draw_verify_button(ui: &mut egui::Ui, app: &mut MyApp) {
+    fn draw_verify_button(ui: &mut egui::Ui, ui_state: &crate::ui::UiState, action: &mut Option<crate::ui::UiAction>) {
         // Enable button only when config is valid
-        let is_config_valid = !app.config.torrent_url.is_empty() && 
-                             !app.config.download_path.as_os_str().is_empty();
+        let is_config_valid = ui_state.is_config_valid();
 
         if ui.add_enabled(
             is_config_valid,
             egui::Button::new("Verify Local Files")
         ).clicked() {
-            println!("UI: Verify local files requested");
-            if let Err(e) = app.sync_cmd_tx.send(SyncCommand::VerifyFolder) {
-                eprintln!("UI: Failed to send folder verify request: {}", e);
-            }
+            *action = Some(crate::ui::UiAction::VerifyLocalFiles);
         }
     }
     
     /// Draw the open download folder button
-    fn draw_open_folder_button(ui: &mut egui::Ui, app: &mut MyApp) {
+    fn draw_open_folder_button(ui: &mut egui::Ui, ui_state: &crate::ui::UiState, action: &mut Option<crate::ui::UiAction>) {
         // Enable button only when download path is configured
-        let is_path_set = !app.config.download_path.as_os_str().is_empty();
+        let is_path_set = ui_state.is_download_path_set();
 
         if ui.add_enabled(
             is_path_set,
             egui::Button::new("Open Folder")
         ).clicked() {
-             println!("UI: Open folder requested for: {}", app.config.download_path.display());
-             // Call the action function (to be created)
-             actions::open_download_folder(app);
+            *action = Some(crate::ui::UiAction::OpenDownloadFolder);
         }
     }
     
     /// Draw the sync status display
-    fn draw_sync_status(ui: &mut egui::Ui, app: &MyApp) {
+    fn draw_sync_status(ui: &mut egui::Ui, ui_state: &crate::ui::UiState) {
         ui.horizontal(|ui| {
             ui.label("Sync Status: ");
             ui.label(
-                RichText::new(app.sync_status.display_text())
-                    .color(app.sync_status.display_color())
+                RichText::new(ui_state.sync_status.display_text())
+                    .color(ui_state.sync_status.display_color())
                     .strong()
             );
         });
     }
-}
-
-// Function to handle the save button click
-fn handle_save_action(app: &mut MyApp) {
-    // Basic validation
-    if app.config_edit_url.trim().is_empty() {
-        app.last_error = Some("Remote URL cannot be empty".to_string());
-        return;
-    }
-    
-    if app.config_edit_path_str.trim().is_empty() {
-        app.last_error = Some("Download path cannot be empty".to_string());
-        return;
-    }
-    
-    // Call save function
-    let _ = save_config_changes(app);
 } 
