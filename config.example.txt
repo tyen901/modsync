@@ -1,0 +1,13 @@
+# Example modsync configuration (TOML)
+# Save this file as `config.txt` next to the modsync executable and edit as needed.
+
+repo_url = "https://example.com/your/modpack.git"
+
+# Path to the directory where real .pbo files will be stored. Use an absolute
+# path on Windows (e.g., "C:\\Games\\Arma3\\mods") or a relative path.
+# If the directory does not exist the application will create it when needed.
+target_mod_dir = "mods"
+
+# Optional: path to the Arma 3 executable. If omitted the application will
+# attempt to detect a suitable installation automatically.
+# arma_executable = "C:\\Program Files\\Arma 3\\arma3.exe"

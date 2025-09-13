@@ -1,0 +1,42 @@
+# Cargo configuration for the modsync application
+#
+# This project provides a TUI for synchronising an Arma 3 modpack from a remote
+# Git repository.  The project depends on a handful of crates to provide
+# functionality such as git operations (`git2`), SHA‑256 hashing (`sha2`),
+# walking the file system (`walkdir`), JSON parsing (`serde` +
+# `serde_json`), a text user interface (`ratatui` with the `crossterm`
+# backend) and error handling (`anyhow`).
+
+[package]
+name = "modsync"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <you@example.com>"]
+license = "MIT OR Apache-2.0"
+description = "Synchronise an Arma 3 modpack from a Git repository and launch the game."
+
+[dependencies]
+anyhow = "1.0.99"
+crossterm = "0.29.0"
+directories = "6.0.0"
+git2 = "0.20.2"
+ratatui = { version = "0.29.0", features = ["crossterm"] }
+serde = { version = "1.0.221", features = ["derive"] }
+serde_json = "1.0.144"
+toml = "0.7.4"
+sha2 = "0.10.9"
+walkdir = "2.5.0"
+async-trait = "0.1.89"
+tokio = { version = "1.47.1", features = ["rt-multi-thread", "macros", "fs", "sync"] }
+hex = "0.4.3"
+reqwest = { version = "0.12.23", features = ["blocking"] }
+log = "0.4.28"
+once_cell = "1.21.3"
+simplelog = "0.12.2"
+
+[build-dependencies]
+# build-time dependencies removed; config is now always created at runtime next to the executable
+
+[dev-dependencies]
+tempfile = "3.22.0"
+tiny_http = "0.12.0"

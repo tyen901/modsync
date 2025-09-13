@@ -1,0 +1,56 @@
+# .gitignore for the `modsync` Rust project
+# This ignores build artifacts, editor/IDE files and common OS junk.
+
+# Rust build output
+/target/
+
+# Compiled library and binary artefacts
+*.rlib
+*.rmeta
+*.dSYM/
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+
+# Cargo incremental compilation cache
+/target/
+
+# If you use `cargo test --nocapture` or other logs
+*.log
+
+# Editor directories and files
+# (Keep editor project files in the repo so workspace settings and tasks can be shared.)
+.idea/
+*.iml
+
+# Backup and temporary files
+*~
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+
+# Environment files
+.env
+.env.*
+
+# Node/npm
+node_modules/
+dist/
+
+# Coverage and profiling
+coverage/
+*.profdata
+*.prof
+
+# Misc
+.cache/
+.history/
+
+# Do NOT ignore Cargo.lock for binaries (it's already checked in for this repo)
