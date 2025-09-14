@@ -2,6 +2,23 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "copy: dev config",
+            "type": "shell",
+            "command": "cmd",
+            "args": [
+                "/c",
+                "copy",
+                "/Y",
+                "${workspaceFolder}\\config.dev.txt",
+                "${workspaceFolder}\\target\\debug\\config.txt"
+            ],
+            "presentation": {
+                "reveal": "silent",
+                "panel": "shared"
+            },
+            "problemMatcher": []
+        },
+        {
             "label": "cargo: build (debug)",
             "type": "shell",
             "command": "cargo",
@@ -107,6 +124,23 @@
                 "reveal": "always",
                 "panel": "shared"
             },
+            "options": {
+                "cwd": "${workspaceFolder}"
+            }
+        },
+        {
+            "label": "build: debug with config",
+            "type": "shell",
+            "dependsOn": [
+                "copy: dev config",
+                "cargo: build (debug)"
+            ],
+            "dependsOrder": "sequence",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": [],
             "options": {
                 "cwd": "${workspaceFolder}"
             }
