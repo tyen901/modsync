@@ -3,6 +3,7 @@ pub mod config;
 pub mod http;
 pub mod index;
 pub mod modpack;
+pub mod lfs;
 
 pub mod downloader;
 

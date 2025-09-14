@@ -218,175 +218,8 @@ fn download_lfs_object(
     repo_remote: Option<&str>,
     size: Option<u64>,
 ) -> Result<()> {
-    // Helper to remove userinfo from URLs (e.g., user@host) which can
-    // produce invalid Host headers for some servers.
-    fn strip_userinfo(u: &str) -> String {
-        if let Some(scheme_pos) = u.find("://") {
-            let after_scheme = &u[scheme_pos + 3..];
-            if let Some(at_pos) = after_scheme.find('@') {
-                let scheme = &u[..scheme_pos];
-                let after_at = &after_scheme[at_pos + 1..];
-                return format!("{}://{}", scheme, after_at);
-            }
-        }
-        u.to_string()
-    }
-
-    // This implementation only supports downloading LFS objects via
-    // the Git LFS batch API exposed by Azure DevOps / VisualStudio style
-    // remotes. For any other remote (or when repo_remote is None) we return
-    // an error rather than creating a placeholder file.
-
-    if let Some(remote) = repo_remote {
-        let sanitized = strip_userinfo(remote);
-        let lower = sanitized.to_ascii_lowercase();
-        if lower.contains("dev.azure.com")
-            || lower.contains("visualstudio.com")
-            || lower.contains("azure")
-            || lower.contains("visualstudio")
-        {
-            // Construct batch endpoint from sanitized repo remote base.
-            let batch = format!("{}/info/lfs/objects/batch", sanitized.trim_end_matches('/'));
-
-            // Prepare batch request
-            #[derive(serde::Serialize)]
-            struct BatchObj<'a> {
-                oid: &'a str,
-                size: u64,
-            }
-            #[derive(serde::Serialize)]
-            struct BatchReq<'a> {
-                operation: &'a str,
-                objects: Vec<BatchObj<'a>>,
-            }
-
-            let size_val = size.unwrap_or(0);
-            let req_body = BatchReq {
-                operation: "download",
-                objects: vec![BatchObj {
-                    oid: sha,
-                    size: size_val,
-                }],
-            };
-
-            let client = reqwest::blocking::Client::new();
-            let mut req = client
-                .post(&batch)
-                .header("Accept", "application/vnd.git-lfs+json")
-                .header("Content-Type", "application/vnd.git-lfs+json")
-                .body(serde_json::to_vec(&req_body)?);
-
-            // Use basic auth with an empty username and PAT as password if
-            // PAT is present.
-            if let Ok(pat) = std::env::var("AZURE_DEVOPS_PAT") {
-                req = req.basic_auth("", Some(pat));
-            }
-
-            let resp = req
-                .send()
-                .with_context(|| format!("Failed to POST LFS batch to {}", batch))?;
-            // Capture status before consuming the response body.
-            let status = resp.status();
-            let resp_bytes = resp
-                .bytes()
-                .with_context(|| "Failed to read LFS batch response body")?;
-            if !status.is_success() {
-                let txt = String::from_utf8_lossy(&resp_bytes).to_string();
-                return Err(anyhow::anyhow!(
-                    "LFS batch request failed: HTTP {}: {}",
-                    status,
-                    txt
-                ));
-            }
-            let v: serde_json::Value = serde_json::from_slice(&resp_bytes)
-                .with_context(|| "Failed to parse LFS batch response JSON")?;
-            // Extract download href from response
-            if let Some(obj) = v.get("objects").and_then(|o| o.get(0)) {
-                if let Some(actions) = obj.get("actions") {
-                    if let Some(download) = actions.get("download") {
-                        if let Some(href) = download.get("href").and_then(|h| h.as_str()) {
-                            // Optional headers
-                            let sanitized_href = strip_userinfo(href);
-                            let mut get_req = client.get(&sanitized_href);
-                            let mut auth_header_present = false;
-                            if let Some(hdrs) = download.get("header").and_then(|h| h.as_object()) {
-                                for (k, v) in hdrs.iter() {
-                                    let is_safe =
-                                        k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
-                                    if !is_safe {
-                                        log::warn!(
-                                            "Skipping unsafe header name from LFS action: {}",
-                                            k
-                                        );
-                                        continue;
-                                    }
-                                    if let Some(val) = v.as_str() {
-                                        if k.eq_ignore_ascii_case("authorization") {
-                                            auth_header_present = true;
-                                        }
-                                        get_req = get_req.header(k, val);
-                                    } else {
-                                        log::warn!("Skipping non-string header value for {}", k);
-                                    }
-                                }
-                            }
-
-                            // If the download action did not provide an Authorization
-                            // header, attach the AZURE_DEVOPS_PAT as basic auth.
-                            if !auth_header_present {
-                                if let Ok(pat) = std::env::var("AZURE_DEVOPS_PAT") {
-                                    get_req = get_req.basic_auth("", Some(pat));
-                                }
-                            }
-
-                            let get_resp = get_req.send().with_context(|| {
-                                format!("Failed to GET LFS object from {}", href)
-                            })?;
-                            let get_status = get_resp.status();
-                            if !get_status.is_success() {
-                                let txt = get_resp
-                                    .text()
-                                    .unwrap_or_else(|_| "<failed to read body>".to_string());
-                                return Err(anyhow::anyhow!(
-                                    "Failed to download LFS object {}: HTTP {}: {}",
-                                    sha,
-                                    get_status,
-                                    txt
-                                ));
-                            }
-                            let bytes = get_resp.bytes().with_context(|| {
-                                format!("Failed to read response body from {}", href)
-                            })?;
-
-                            // Ensure the parent directory exists so that we can write into it.
-                            if let Some(parent) = dest.parent() {
-                                fs::create_dir_all(parent).with_context(|| {
-                                    format!("Failed to create directory {}", parent.display())
-                                })?;
-                            }
-
-                            fs::write(dest, &bytes).with_context(|| {
-                                format!(
-                                    "Failed to write downloaded LFS object to {}",
-                                    dest.display()
-                                )
-                            })?;
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-            return Err(anyhow::anyhow!(
-                "LFS batch response did not include download action"
-            ));
-        }
-    }
-
-    // If we reach here the remote is not supported by this downloader.
-    Err(anyhow::anyhow!(
-        "Unsupported or missing remote for LFS download: {:?}",
-        repo_remote
-    ))
+    // Delegate to the new lfs module which encapsulates downloading logic.
+    crate::lfs::download_lfs_object(sha, dest, repo_remote, size)
 }
 
 /// Synchronises the contents of the repository at `repo_path` with the
@@ -551,6 +384,99 @@ pub fn validate_modpack(repo_path: &Path, target_path: &Path) -> Result<Vec<Path
         }
     }
     Ok(mismatches)
+}
+
+/// Helper used by tests and other callers to perform an Azure DevOps-style
+/// Git LFS batch download using a blocking `reqwest::blocking::Client` and
+/// write the resulting object bytes to `target_path`.
+///
+/// This is intentionally blocking so integration tests (which use the
+/// blocking client) can reuse the same logic as the async `AzureClient`.
+pub fn azure_lfs_batch_download_and_write_blocking(
+    client: &reqwest::blocking::Client,
+    pat: &str,
+    repo_base: &str,
+    oid: &str,
+    size: u64,
+    target_path: &Path,
+) -> Result<()> {
+    #[derive(serde::Serialize)]
+    struct BatchObj<'a> {
+        oid: &'a str,
+        size: u64,
+    }
+    #[derive(serde::Serialize)]
+    struct BatchReq<'a> {
+        operation: &'a str,
+        objects: Vec<BatchObj<'a>>,
+    }
+
+    let req_body = BatchReq {
+        operation: "download",
+        objects: vec![BatchObj { oid, size }],
+    };
+    let batch_url = format!("{}/info/lfs/objects/batch", repo_base.trim_end_matches('/'));
+    let batch_resp = client
+        .post(&batch_url)
+        .basic_auth("", Some(pat.to_string()))
+        .header("Accept", "application/vnd.git-lfs+json")
+        .header("Content-Type", "application/vnd.git-lfs+json")
+        .body(serde_json::to_vec(&req_body)?)
+        .send()?;
+    let batch_status = batch_resp.status();
+    let batch_text = batch_resp.text().unwrap_or_default();
+    if !batch_status.is_success() {
+        return Err(anyhow::anyhow!(
+            "LFS batch failed for {}: HTTP {}: {}",
+            oid,
+            batch_status,
+            batch_text
+        ));
+    }
+    let batch_json: serde_json::Value = serde_json::from_str(&batch_text)?;
+    if let Some(obj) = batch_json.get("objects").and_then(|o| o.get(0)) {
+        if let Some(actions) = obj.get("actions") {
+            if let Some(download) = actions.get("download") {
+                if let Some(href) = download.get("href").and_then(|h| h.as_str()) {
+                    // Strip potential userinfo from href (e.g., user@host)
+                    fn strip_userinfo(u: &str) -> String {
+                        if let Some(scheme_pos) = u.find("://") {
+                            let after_scheme = &u[scheme_pos + 3..];
+                            if let Some(at_pos) = after_scheme.find('@') {
+                                let scheme = &u[..scheme_pos];
+                                let after_at = &after_scheme[at_pos + 1..];
+                                return format!("{}://{}", scheme, after_at);
+                            }
+                        }
+                        u.to_string()
+                    }
+                    let sanitized_href = strip_userinfo(href);
+                    let get_req = client
+                        .get(&sanitized_href)
+                        .basic_auth("", Some(pat.to_string()))
+                        .header("Accept", "application/vnd.git-lfs");
+                    let get_resp = get_req.send()?;
+                    let get_status = get_resp.status();
+                    if !get_status.is_success() {
+                        let get_text = get_resp.text().unwrap_or_default();
+                        return Err(anyhow::anyhow!(
+                            "LFS GET failed for {}: HTTP {}: {}",
+                            oid,
+                            get_status,
+                            get_text
+                        ));
+                    }
+                    let bytes = get_resp.bytes()?;
+                    std::fs::write(target_path, &bytes)?;
+                    return Ok(());
+                }
+            }
+        }
+    }
+    Err(anyhow::anyhow!(
+        "LFS batch response did not include download action for {}",
+        oid
+    ))
 }
 
 #[cfg(test)]
