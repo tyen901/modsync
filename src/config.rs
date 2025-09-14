@@ -61,7 +61,7 @@ impl Default for Config {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let target_mod = exe_parent.join("mods");
         Self {
-            repo_url: String::from("https://example.com/your/modpack.git"),
+            repo_url: String::from("https://peanutcommunityarma@dev.azure.com/peanutcommunityarma/pca/_git/xyi"),
             target_mod_dir: target_mod,
             arma_executable: None,
         }
@@ -77,6 +77,66 @@ impl Config {
             .and_then(|p| p.parent().map(|d| d.to_path_buf()))
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         exe_parent.join("repo")
+    }
+
+    /// Private state file location (stores previous repo URL etc). This is
+    /// stored next to the executable and is not user editable.
+    fn state_path() -> Result<PathBuf> {
+        let exe = env::current_exe().with_context(|| "Unable to determine current executable path")?;
+        let dir = exe.parent().ok_or_else(|| anyhow::anyhow!("Executable has no parent directory"))?;
+        Ok(dir.join("state.txt"))
+    }
+
+    /// Loads private state (previous repo URL) if present, otherwise returns
+    /// a default empty state.
+    pub fn load_state() -> Result<PrivateState> {
+        let state_path = Self::state_path()?;
+        if state_path.exists() {
+            let contents = fs::read_to_string(&state_path).with_context(|| {
+                format!("Failed to read state file at {}", state_path.display())
+            })?;
+            let state: PrivateState = toml::from_str(&contents).with_context(|| {
+                format!("State file {} is not valid TOML", state_path.display())
+            })?;
+            Ok(state)
+        } else {
+            Ok(PrivateState::default())
+        }
+    }
+
+    /// Saves private state, overwriting any existing file.
+    pub fn save_state(state: &PrivateState) -> Result<()> {
+        let state_path = Self::state_path()?;
+        let toml = toml::to_string_pretty(state).context("Failed to serialise state to TOML")?;
+        fs::write(&state_path, toml).with_context(|| {
+            format!("Failed to write state file to {}", state_path.display())
+        })?;
+        Ok(())
+    }
+
+    /// Ensure the cached repository is valid for the configured repo URL. If
+    /// the previously-used URL differs from the current one the cache is
+    /// removed because it is no longer valid. The current repo URL is then
+    /// stored into the private state file.
+    pub fn ensure_repo_cache_for_url(&self) -> Result<()> {
+        let mut state = Self::load_state()?;
+        if let Some(prev) = &state.previous_repo_url {
+            if prev != &self.repo_url {
+                let repo_path = self.repo_cache_path();
+                if repo_path.exists() {
+                    std::fs::remove_dir_all(&repo_path).with_context(|| {
+                        format!(
+                            "Removed cached repository at {} because repo URL changed (was: {})",
+                            repo_path.display(),
+                            prev
+                        )
+                    })?;
+                }
+            }
+        }
+        state.previous_repo_url = Some(self.repo_url.clone());
+        Self::save_state(&state)?;
+        Ok(())
     }
 
     /// Location of the configuration file.  The file is stored next to the
@@ -156,4 +216,12 @@ impl Config {
             Ok(None)
         }
     }
+}
+
+/// Private, persistent application state stored next to the executable.
+/// This holds data that should not be exposed in the user-facing config.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PrivateState {
+    /// The previously-used repository URL.
+    pub previous_repo_url: Option<String>,
 }
