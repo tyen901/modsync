@@ -1,8 +1,12 @@
 # .gitignore for the `modsync` Rust project
 # This ignores build artifacts, editor/IDE files and common OS junk.
 
-# Rust build output
-/target/
+# Rust build output (ignore everything under `target/`)
+# The trailing slash and recursive pattern ensure all files and subfolders
+# are ignored. Keep this at the top so other rules can't accidentally
+# re-include build artifacts.
+target/
+target/**
 
 # Compiled library and binary artefacts
 *.rlib
@@ -13,9 +17,6 @@
 *.dll
 *.exe
 *.pdb
-
-# Cargo incremental compilation cache
-/target/
 
 # If you use `cargo test --nocapture` or other logs
 *.log
