@@ -1,30 +1,119 @@
-//! Entry point for the `modsync` application.
-//!
-//! This binary orchestrates loading the user's configuration, initialising the
-//! user interface and dispatching actions such as synchronising the modpack,
-//! validating the local installation and launching Arma 3.  The heavy
-//! lifting is delegated to modules like `gitutils`, `modpack`, `config`,
-//! `arma` and `ui`.
-
+//! Minimal CLI entrypoint performing an HTTP-based sync using Azure DevOps APIs.
+use std::path::Path;
 use anyhow::Result;
-use modsync::{config, ui};
+use clap::Parser;
+use modsync::{config::Config, http::AzureClient, index, downloader};
+use tokio::io::AsyncWriteExt;
 
-/// Asynchronously initialises the application and hands control over to the
-/// TUI.  Tokio is used here to allow potentially long‑running operations (for
-/// example filesystem scans or network operations) to run without blocking
-/// the UI.
+#[derive(Parser)]
+struct Opts {
+    /// Azure DevOps repository API base, e.g.
+    /// https://dev.azure.com/{org}/{project}/_apis/git/repositories/{repo}
+    #[arg(long)]
+    base: String,
+
+    /// Commit SHA to sync against
+    #[arg(long)]
+    commit: String,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Load or create the user configuration.  If the configuration file
-    // doesn't exist yet the `Config::load` call will produce a sensible
-    // default.  Should this fail the error will bubble up and be logged on
-    // stderr.
-    let config = config::Config::load()?;
+    let opts = Opts::parse();
 
-    // Create and run the TUI.  The UI holds its own copy of the
-    // configuration and updates it as the user makes changes.  When
-    // returning from `run` the configuration is automatically persisted.
-    let mut app = ui::App::new(config).await?;
-    app.run().await?;
+    // Load configuration (for target directory)
+    let cfg = Config::load()?;
+    let out_dir = cfg.target_mod_dir.clone();
+    // Build local index
+    let local_index = index::build_local_index(&out_dir)?;
+
+    // Create Azure client
+    let client = AzureClient::new(&opts.base, None).await?;
+
+    // List items at commit
+    let items_resp = client.list_items_commit("/", &opts.commit).await?;
+
+    // Build remote index from items
+    let mut remote_index = index::Index::new();
+    let pointer_prefix = b"version https://git-lfs.github.com/spec/";
+    for item in items_resp.value.into_iter() {
+        if item.isFolder.unwrap_or(false) {
+            continue;
+        }
+        let path = match item.path {
+            Some(p) => {
+                // strip leading slash if present
+                let p = if p.starts_with('/') { &p[1..] } else { &p };
+                std::path::PathBuf::from(p)
+            }
+            None => continue,
+        };
+        if let Some(object_id) = item.objectId {
+            // If the blob looks small, fetch content to detect LFS pointer
+            let size = item.size.unwrap_or(0);
+            if size > 0 && size < 4096 {
+                if let Ok(bytes) = client.get_blob_by_oid(&object_id).await {
+                    if bytes.starts_with(pointer_prefix) {
+                        // parse pointer lines for oid sha256 and size
+                        let s = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+                        let mut oid_sha: Option<String> = None;
+                        let mut sz: Option<u64> = None;
+                        for line in s.lines() {
+                            if line.starts_with("oid sha256:") {
+                                oid_sha = Some(line["oid sha256:".len()..].trim().to_string());
+                            } else if line.starts_with("size ") {
+                                if let Ok(v) = line["size ".len()..].trim().parse::<u64>() {
+                                    sz = Some(v);
+                                }
+                            }
+                        }
+                        if let Some(sha256) = oid_sha {
+                            remote_index.insert(
+                                path,
+                                index::BlobEntry {
+                                    oid: sha256,
+                                    size: sz.unwrap_or(size),
+                                    is_lfs: true,
+                                },
+                            );
+                            continue;
+                        }
+                    } else {
+                        // not a pointer; treat as regular blob with provided object id
+                        remote_index.insert(
+                            path,
+                            index::BlobEntry {
+                                oid: object_id,
+                                size,
+                                is_lfs: false,
+                            },
+                        );
+                        continue;
+                    }
+                }
+            } else {
+                // Large blob -> regular file
+                remote_index.insert(
+                    path,
+                    index::BlobEntry {
+                        oid: object_id,
+                        size,
+                        is_lfs: false,
+                    },
+                );
+                continue;
+            }
+        }
+    }
+
+    // Compute sync plan
+    let plan = index::compare_indexes(&local_index, &remote_index);
+
+    // Execute plan
+    let summary = downloader::execute_plan(&client, plan, &out_dir).await?;
+    println!(
+        "Sync complete: files_done={} bytes_done={}",
+        summary.files_done, summary.bytes_done
+    );
     Ok(())
 }

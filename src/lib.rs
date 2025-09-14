@@ -1,11 +1,11 @@
 pub mod arma;
 pub mod config;
-pub mod gitutils;
+pub mod http;
+pub mod index;
 pub mod modpack;
-pub mod ui;
 
-mod downloader;
+pub mod downloader;
 
-// Re-export commonly used types for convenience in integration tests.
 pub use config::Config;
-pub use downloader::{ControlCommand, DownloaderConfig, LfsDownloadItem, ProgressEvent};
+pub use downloader::{ControlCommand, DownloaderConfig, LfsDownloadItem, ProgressEvent, Summary, start_download_job};
+pub use index::SyncPlan;

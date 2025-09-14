@@ -1,24 +1,19 @@
 use std::collections::HashSet;
-use std::sync::mpsc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use modsync::{ControlCommand, DownloaderConfig, LfsDownloadItem, ProgressEvent};
+use modsync::{ControlCommand, DownloaderConfig, LfsDownloadItem, ProgressEvent, start_download_job};
 
 fn spawn_job_and_channel(
     items: Vec<LfsDownloadItem>,
     cfg: DownloaderConfig,
 ) -> (
     std::sync::mpsc::Sender<ControlCommand>,
-    mpsc::Receiver<ProgressEvent>,
+    std::sync::mpsc::Receiver<ProgressEvent>,
 ) {
-    let (tx, rx) = mpsc::channel::<ProgressEvent>();
-    let on_event = move |ev: ProgressEvent| {
-        // Best-effort: ignore send failures (test may have stopped receiving).
-        let _ = tx.send(ev);
-    };
-    let (control_tx, _supervisor) = modsync::ui::attach_downloader_consumer(items, cfg, on_event);
-    (control_tx, rx)
+    // start_download_job returns (progress_rx, control_tx, handle)
+    let (progress_rx, control_tx, _handle) = start_download_job(items, cfg);
+    (control_tx, progress_rx)
 }
 
 #[test]
