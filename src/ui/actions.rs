@@ -56,8 +56,13 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
                         // modpack state and determine downloads.
                         let _ = task_tx.send(TaskUpdate::StageStarted(2));
                         // Copy non-pointer files into target first.
-                        if let Err(e) = modpack::copy_non_pointer_files(&repo_path, &config.target_mod_dir) {
-                            let _ = task_tx.send(TaskUpdate::StageFailed(2, format!("Failed to copy files: {}", e)));
+                        if let Err(e) =
+                            modpack::copy_non_pointer_files(&repo_path, &config.target_mod_dir)
+                        {
+                            let _ = task_tx.send(TaskUpdate::StageFailed(
+                                2,
+                                format!("Failed to copy files: {}", e),
+                            ));
                             let _ = task_tx.send(TaskUpdate::Aborted);
                             return;
                         }
@@ -74,18 +79,23 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
                                 let _ = task_tx.send(TaskUpdate::SetModpackState(state_lines));
                             }
                             Err(e) => {
-                                let _ = task_tx.send(TaskUpdate::SetModpackState(vec![format!("Validation error: {}", e)]));
+                                let _ = task_tx.send(TaskUpdate::SetModpackState(vec![format!(
+                                    "Validation error: {}",
+                                    e
+                                )]));
                             }
                         }
 
                         match modpack::collect_download_items(&repo_path, &config.target_mod_dir) {
                             Ok(items) => {
                                 // Inform UI of the planned downloads (oid, size, dest)
-                                let simple_list: Vec<(String, Option<u64>, std::path::PathBuf)> = items
-                                    .iter()
-                                    .map(|it| (it.oid.clone(), it.size, it.dest.clone()))
-                                    .collect();
-                                let _ = task_tx.send(TaskUpdate::SetDownloadList(simple_list.clone()));
+                                let simple_list: Vec<(String, Option<u64>, std::path::PathBuf)> =
+                                    items
+                                        .iter()
+                                        .map(|it| (it.oid.clone(), it.size, it.dest.clone()))
+                                        .collect();
+                                let _ =
+                                    task_tx.send(TaskUpdate::SetDownloadList(simple_list.clone()));
 
                                 if items.is_empty() {
                                     let _ = task_tx.send(TaskUpdate::StageCompleted(2));
@@ -98,14 +108,21 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
                                         coalesce_threshold_bytes: 32 * 1024,
                                     };
                                     let task_tx_clone = task_tx.clone();
-                                    let ( _control, supervisor ) = crate::ui::attach_downloader_consumer(
-                                        items,
-                                        cfg,
-                                        move |ev| {
-                                            // forward downloader event into UI state
-                                            let _ = task_tx_clone.send(TaskUpdate::DownloaderEvent(ev));
-                                        },
-                                    );
+                                    let (control_tx, supervisor) =
+                                        crate::ui::attach_downloader_consumer(
+                                            items,
+                                            cfg,
+                                            move |ev| {
+                                                // forward downloader event into UI state
+                                                let _ = task_tx_clone
+                                                    .send(TaskUpdate::DownloaderEvent(ev));
+                                            },
+                                        );
+
+                                    // Drop the control sender so the downloader's coordinator sees the channel closed
+                                    // and can exit once workers are done. Keeping the sender alive here prevented the
+                                    // coordinator from terminating and caused the sync stage to hang.
+                                    drop(control_tx);
 
                                     // Wait for the download supervisor to finish (workers + forwarder). This ensures the UI
                                     // has received final Completed/Failed events for all files before we mark the stage done.

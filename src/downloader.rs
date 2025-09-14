@@ -171,7 +171,7 @@ pub fn start_download_job(
         let max_workers = std::cmp::min(4, items.len().max(1));
         let total_items = items.len();
 
-    // (using Condvar-backed task queue instead of channel)
+        // (using Condvar-backed task queue instead of channel)
 
         // Spawn aggregator thread that emits Aggregate events periodically.
         let agg_tx = progress_tx.clone();
@@ -241,7 +241,13 @@ pub fn start_download_job(
             queue: VecDeque<LfsDownloadItem>,
             closed: bool,
         }
-        let task_queue = std::sync::Arc::new((std::sync::Mutex::new(TaskQueue { queue: VecDeque::new(), closed: false }), std::sync::Condvar::new()));
+        let task_queue = std::sync::Arc::new((
+            std::sync::Mutex::new(TaskQueue {
+                queue: VecDeque::new(),
+                closed: false,
+            }),
+            std::sync::Condvar::new(),
+        ));
         for _ in 0..max_workers {
             let tx = progress_tx.clone();
             let cancel_all = cancel_all.clone();
@@ -400,7 +406,9 @@ pub fn start_download_job(
                         }
 
                         let interval_limit = Duration::from_millis(progress_interval_ms.max(100));
-                        if bytes_accum >= coalesce_threshold || last_send.elapsed() >= interval_limit {
+                        if bytes_accum >= coalesce_threshold
+                            || last_send.elapsed() >= interval_limit
+                        {
                             let send_bytes = bytes_accum;
                             // check once more before sending progress
                             if cancel_all.load(Ordering::SeqCst) {

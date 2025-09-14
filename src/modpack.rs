@@ -78,7 +78,9 @@ pub fn parse_lfs_pointer_file(path: &Path) -> Result<Option<LfsPointer>> {
         let hex_bytes = &data[hex_start..hex_end];
         // Hex should be ASCII; normalize to lowercase so comparisons are
         // case-insensitive.
-        let hex_str = String::from_utf8_lossy(hex_bytes).trim().to_ascii_lowercase();
+        let hex_str = String::from_utf8_lossy(hex_bytes)
+            .trim()
+            .to_ascii_lowercase();
         if !hex_str.is_empty() {
             found_oid = Some(hex_str);
         }
@@ -87,7 +89,10 @@ pub fn parse_lfs_pointer_file(path: &Path) -> Result<Option<LfsPointer>> {
     // Try to parse size line if present (case-insensitive search for "size ").
     let size_needle = b"size ";
     let mut found_size: Option<u64> = None;
-    if let Some(pos) = lower.windows(size_needle.len()).position(|w| w == size_needle) {
+    if let Some(pos) = lower
+        .windows(size_needle.len())
+        .position(|w| w == size_needle)
+    {
         let num_start = pos + size_needle.len();
         let mut num_end = num_start;
         while num_end < lower.len() {
@@ -108,7 +113,10 @@ pub fn parse_lfs_pointer_file(path: &Path) -> Result<Option<LfsPointer>> {
     }
 
     if let Some(oid) = found_oid {
-        return Ok(Some(LfsPointer { oid, size: found_size }));
+        return Ok(Some(LfsPointer {
+            oid,
+            size: found_size,
+        }));
     }
     Ok(None)
 }
@@ -256,7 +264,10 @@ fn download_lfs_object(
             let size_val = size.unwrap_or(0);
             let req_body = BatchReq {
                 operation: "download",
-                objects: vec![BatchObj { oid: sha, size: size_val }],
+                objects: vec![BatchObj {
+                    oid: sha,
+                    size: size_val,
+                }],
             };
 
             let client = reqwest::blocking::Client::new();
@@ -392,9 +403,9 @@ pub fn sync_modpack(repo_path: &Path, target_path: &Path) -> Result<()> {
                        // Try to discover the repository's origin remote URL so we can use
                        // provider-specific LFS endpoints (for example Azure DevOps) when
                        // available.
-    // repo_remote is not required here; `collect_download_items` will
-    // determine the remote for each pointer and downloads are performed
-    // using the per-item repo_remote value.
+                       // repo_remote is not required here; `collect_download_items` will
+                       // determine the remote for each pointer and downloads are performed
+                       // using the per-item repo_remote value.
 
     // Phase 1: copy all non-pointer files into the target.
     copy_non_pointer_files(repo_path, target_path)?;
@@ -402,7 +413,12 @@ pub fn sync_modpack(repo_path: &Path, target_path: &Path) -> Result<()> {
     // Phase 2: collect and download LFS objects for pointer files.
     let items = collect_download_items(repo_path, target_path)?;
     for item in items {
-        download_lfs_object(&item.oid, &item.dest, item.repo_remote.as_deref(), item.size)?;
+        download_lfs_object(
+            &item.oid,
+            &item.dest,
+            item.repo_remote.as_deref(),
+            item.size,
+        )?;
     }
 
     Ok(())

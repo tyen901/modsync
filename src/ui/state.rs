@@ -96,7 +96,11 @@ impl App {
                 use crate::downloader::ProgressEvent;
                 if let Some(t) = &mut self.current_task {
                     match ev {
-                        ProgressEvent::Started { oid, total, started_at } => {
+                        ProgressEvent::Started {
+                            oid,
+                            total,
+                            started_at,
+                        } => {
                             if let Some(f) = t.files.iter_mut().find(|f| f.oid == oid) {
                                 f.total = total;
                                 f.bytes_received = 0;
@@ -105,13 +109,24 @@ impl App {
                                 f.error = None;
                             }
                         }
-                        ProgressEvent::Progress { oid, bytes_received, chunk_bytes: _, total: _, instant_bps } => {
+                        ProgressEvent::Progress {
+                            oid,
+                            bytes_received,
+                            chunk_bytes: _,
+                            total: _,
+                            instant_bps,
+                        } => {
                             if let Some(f) = t.files.iter_mut().find(|f| f.oid == oid) {
                                 f.bytes_received = bytes_received;
                                 f.instant_bps = Some(instant_bps);
                             }
                         }
-                        ProgressEvent::Completed { oid, path: _, total_bytes, elapsed } => {
+                        ProgressEvent::Completed {
+                            oid,
+                            path: _,
+                            total_bytes,
+                            elapsed,
+                        } => {
                             if let Some(f) = t.files.iter_mut().find(|f| f.oid == oid) {
                                 f.bytes_received = total_bytes;
                                 f.completed = true;
@@ -151,10 +166,10 @@ impl App {
                 self.modpack_state = state_lines;
                 self.current_task = None;
             }
-                    TaskUpdate::SetModpackState(state_lines) => {
-                        // Replace the modpack state without clearing the current task.
-                        self.modpack_state = state_lines;
-                    }
+            TaskUpdate::SetModpackState(state_lines) => {
+                // Replace the modpack state without clearing the current task.
+                self.modpack_state = state_lines;
+            }
             TaskUpdate::Aborted => {
                 self.current_task = None;
             }
@@ -216,7 +231,10 @@ pub struct FileProgress {
 /// Updates sent from background tasks to the UI.
 #[derive(Debug, Clone)]
 pub enum TaskUpdate {
-    Start { name: String, stages: Vec<String> },
+    Start {
+        name: String,
+        stages: Vec<String>,
+    },
     StageStarted(usize),
     StageCompleted(usize),
     StageFailed(usize, String),

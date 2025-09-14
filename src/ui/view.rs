@@ -102,7 +102,14 @@ pub fn render(f: &mut Frame, app: &App) {
             let stage_height = (1 + task.stages.len()) as u16 + 1; // header + stages + spacer
             let vchunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(stage_height), Constraint::Length(3), Constraint::Min(0)].as_ref())
+                .constraints(
+                    [
+                        Constraint::Length(stage_height),
+                        Constraint::Length(3),
+                        Constraint::Min(0),
+                    ]
+                    .as_ref(),
+                )
                 .split(right);
 
             // Stages in top chunk
@@ -118,26 +125,38 @@ pub fn render(f: &mut Frame, app: &App) {
             }
             let stage_text = stage_lines.join("\n");
             let stage_widget = Paragraph::new(stage_text)
-                .block(Block::default().title("Task Progress").borders(Borders::ALL))
+                .block(
+                    Block::default()
+                        .title("Task Progress")
+                        .borders(Borders::ALL),
+                )
                 .wrap(Wrap { trim: true });
             f.render_widget(stage_widget, vchunks[0]);
 
             // Compute overall progress and render in middle chunk (vchunks[1])
             let files_total = task.files.len();
             let files_done = task.files.iter().filter(|ff| ff.completed).count();
-            let bytes_total_opt: Option<u64> = task
-                .files
-                .iter()
-                .map(|ff| ff.total)
-                .fold(Some(0u64), |acc, v| match (acc, v) {
-                    (Some(a), Some(b)) => Some(a.saturating_add(b)),
-                    _ => None,
-                });
+            let bytes_total_opt: Option<u64> =
+                task.files
+                    .iter()
+                    .map(|ff| ff.total)
+                    .fold(Some(0u64), |acc, v| match (acc, v) {
+                        (Some(a), Some(b)) => Some(a.saturating_add(b)),
+                        _ => None,
+                    });
             let bytes_done: u64 = task.files.iter().map(|ff| ff.bytes_received).sum();
             let overall_ratio = if let Some(total) = bytes_total_opt {
-                if total == 0 { 0.0 } else { (bytes_done as f64 / total as f64).clamp(0.0, 1.0) }
+                if total == 0 {
+                    0.0
+                } else {
+                    (bytes_done as f64 / total as f64).clamp(0.0, 1.0)
+                }
             } else {
-                if files_total == 0 { 0.0 } else { (files_done as f64 / files_total as f64).clamp(0.0, 1.0) }
+                if files_total == 0 {
+                    0.0
+                } else {
+                    (files_done as f64 / files_total as f64).clamp(0.0, 1.0)
+                }
             };
             let speed_suffix = task
                 .overall_instant_bps
@@ -157,11 +176,23 @@ pub fn render(f: &mut Frame, app: &App) {
             let overall_label = if let Some(total) = bytes_total_opt {
                 format!("Overall: {}/{} bytes{}", bytes_done, total, speed_suffix)
             } else {
-                format!("Overall: {}/{} files{}", files_done, files_total, speed_suffix)
+                format!(
+                    "Overall: {}/{} files{}",
+                    files_done, files_total, speed_suffix
+                )
             };
             let overall_gauge = Gauge::default()
-                .block(Block::default().title("Overall Progress").borders(Borders::ALL))
-                .gauge_style(Style::default().fg(Color::Green).bg(Color::Black).add_modifier(Modifier::BOLD))
+                .block(
+                    Block::default()
+                        .title("Overall Progress")
+                        .borders(Borders::ALL),
+                )
+                .gauge_style(
+                    Style::default()
+                        .fg(Color::Green)
+                        .bg(Color::Black)
+                        .add_modifier(Modifier::BOLD),
+                )
                 .ratio(overall_ratio)
                 .label(overall_label);
             f.render_widget(overall_gauge, vchunks[1]);
@@ -181,9 +212,17 @@ pub fn render(f: &mut Frame, app: &App) {
                     .and_then(|s| s.to_str())
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| fpr.dest.display().to_string());
-                let short_oid = if fpr.oid.len() > 8 { &fpr.oid[..8] } else { &fpr.oid };
+                let short_oid = if fpr.oid.len() > 8 {
+                    &fpr.oid[..8]
+                } else {
+                    &fpr.oid
+                };
                 let progress_str = if let Some(total) = fpr.total {
-                    let pct = if total == 0 { 0.0 } else { (fpr.bytes_received as f64 / total as f64) * 100.0 };
+                    let pct = if total == 0 {
+                        0.0
+                    } else {
+                        (fpr.bytes_received as f64 / total as f64) * 100.0
+                    };
                     format!("{:.1}% ({}/{})", pct, fpr.bytes_received, total)
                 } else {
                     format!("{} bytes", fpr.bytes_received)
@@ -206,11 +245,15 @@ pub fn render(f: &mut Frame, app: &App) {
                 let line = if speed_str.is_empty() {
                     format!("{} ({}) — {}", fname, short_oid, progress_str)
                 } else {
-                    format!("{} ({}) — {} — {}", fname, short_oid, progress_str, speed_str)
+                    format!(
+                        "{} ({}) — {} — {}",
+                        fname, short_oid, progress_str, speed_str
+                    )
                 };
                 items.push(ListItem::new(line));
             }
-            let list = List::new(items).block(Block::default().title("Active files").borders(Borders::ALL));
+            let list = List::new(items)
+                .block(Block::default().title("Active files").borders(Borders::ALL));
             f.render_widget(list, bottom);
         }
     } else {
