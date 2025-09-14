@@ -51,14 +51,46 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
                     Ok(repo) => {
                         let _ = gitutils::fetch(&repo);
                         let _ = task_tx.send(TaskUpdate::StageCompleted(1));
-                        // Stage 2: sync files
+                        // Stage 2: determine downloads and perform them with the downloader
                         let _ = task_tx.send(TaskUpdate::StageStarted(2));
-                        match modpack::sync_modpack(&repo_path, &config.target_mod_dir) {
-                            Ok(()) => {
-                                let _ = task_tx.send(TaskUpdate::StageCompleted(2));
-                                // Send finished state lines (simple example).
-                                let state_lines = vec!["Sync: OK".to_string()];
-                                let _ = task_tx.send(TaskUpdate::Finished(state_lines));
+                        match modpack::collect_download_items(&repo_path, &config.target_mod_dir) {
+                            Ok(items) => {
+                                // Inform UI of the planned downloads (oid, size, dest)
+                                let simple_list: Vec<(String, Option<u64>, std::path::PathBuf)> = items
+                                    .iter()
+                                    .map(|it| (it.oid.clone(), it.size, it.dest.clone()))
+                                    .collect();
+                                let _ = task_tx.send(TaskUpdate::SetDownloadList(simple_list.clone()));
+
+                                if items.is_empty() {
+                                    let _ = task_tx.send(TaskUpdate::StageCompleted(2));
+                                    let state_lines = vec!["Sync: OK (no downloads)".to_string()];
+                                    let _ = task_tx.send(TaskUpdate::Finished(state_lines));
+                                } else {
+                                    // Start downloader and forward its events into the UI task channel.
+                                    let cfg = crate::downloader::DownloaderConfig {
+                                        progress_interval_ms: 250,
+                                        coalesce_threshold_bytes: 32 * 1024,
+                                    };
+                                    let task_tx_clone = task_tx.clone();
+                                    let ( _control, supervisor ) = crate::ui::attach_downloader_consumer(
+                                        items,
+                                        cfg,
+                                        move |ev| {
+                                            // forward downloader event into UI state
+                                            let _ = task_tx_clone.send(TaskUpdate::DownloaderEvent(ev));
+                                        },
+                                    );
+
+                                    // Wait for the download supervisor to finish (workers + forwarder). This ensures the UI
+                                    // has received final Completed/Failed events for all files before we mark the stage done.
+                                    let _ = supervisor.join();
+
+                                    // Stage completion and finished state. The UI will have seen per-file Completed events.
+                                    let _ = task_tx.send(TaskUpdate::StageCompleted(2));
+                                    let state_lines = vec!["Sync: OK".to_string()];
+                                    let _ = task_tx.send(TaskUpdate::Finished(state_lines));
+                                }
                             }
                             Err(e) => {
                                 let _ = task_tx.send(TaskUpdate::StageFailed(2, format!("{e}")));

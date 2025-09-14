@@ -2,5 +2,5 @@
 # This file is intended for local testing. It's copied to target/debug/config.txt
 
 repo_url = "https://peanutcommunityarma@dev.azure.com/peanutcommunityarma/pca/_git/xyi"
-target_mod_dir = "mods"
+target_mod_dir = "temp\\dev_output"
 arma_executable = "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Arma 3\\arma3_x64.exe"

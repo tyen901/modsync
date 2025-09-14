@@ -7,6 +7,8 @@
 
 use crate::config::Config;
 use anyhow::Result;
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 /// Application state for the terminal UI.
 #[derive(Debug)]
@@ -72,6 +74,62 @@ impl App {
             TaskUpdate::Start { name, stages } => {
                 self.current_task = Some(TaskState::new(name, stages));
             }
+            TaskUpdate::SetDownloadList(list) => {
+                if let Some(t) = &mut self.current_task {
+                    t.files = list
+                        .into_iter()
+                        .map(|(oid, size, dest)| FileProgress {
+                            oid,
+                            dest,
+                            total: size,
+                            bytes_received: 0,
+                            started_at: None,
+                            completed: false,
+                            elapsed: None,
+                            instant_bps: None,
+                            error: None,
+                        })
+                        .collect();
+                }
+            }
+            TaskUpdate::DownloaderEvent(ev) => {
+                use crate::downloader::ProgressEvent;
+                if let Some(t) = &mut self.current_task {
+                    match ev {
+                        ProgressEvent::Started { oid, total, started_at } => {
+                            if let Some(f) = t.files.iter_mut().find(|f| f.oid == oid) {
+                                f.total = total;
+                                f.bytes_received = 0;
+                                f.started_at = Some(started_at);
+                                f.completed = false;
+                                f.error = None;
+                            }
+                        }
+                        ProgressEvent::Progress { oid, bytes_received, chunk_bytes: _, total: _, instant_bps } => {
+                            if let Some(f) = t.files.iter_mut().find(|f| f.oid == oid) {
+                                f.bytes_received = bytes_received;
+                                f.instant_bps = Some(instant_bps);
+                            }
+                        }
+                        ProgressEvent::Completed { oid, path: _, total_bytes, elapsed } => {
+                            if let Some(f) = t.files.iter_mut().find(|f| f.oid == oid) {
+                                f.bytes_received = total_bytes;
+                                f.completed = true;
+                                f.elapsed = Some(elapsed);
+                            }
+                        }
+                        ProgressEvent::Failed { oid, error } => {
+                            if let Some(f) = t.files.iter_mut().find(|f| f.oid == oid) {
+                                f.error = Some(error);
+                                f.completed = false;
+                            }
+                        }
+                        ProgressEvent::Aggregate { .. } => {
+                            // ignore here; view may render aggregate info
+                        }
+                    }
+                }
+            }
             TaskUpdate::StageStarted(idx) => {
                 if let Some(t) = &mut self.current_task {
                     t.current_stage = idx;
@@ -117,6 +175,8 @@ pub struct TaskState {
     pub stages: Vec<String>,
     pub current_stage: usize,
     pub stage_statuses: Vec<TaskStageStatus>,
+    /// Optional per-file download progress tracked during the sync stage.
+    pub files: Vec<FileProgress>,
 }
 
 impl TaskState {
@@ -127,8 +187,23 @@ impl TaskState {
             stages,
             current_stage: 0,
             stage_statuses: vec![TaskStageStatus::Pending; len],
+            files: Vec::new(),
         }
     }
+}
+
+/// Per-file download progress tracked while a sync task is running.
+#[derive(Debug, Clone)]
+pub struct FileProgress {
+    pub oid: String,
+    pub dest: PathBuf,
+    pub total: Option<u64>,
+    pub bytes_received: u64,
+    pub started_at: Option<Instant>,
+    pub completed: bool,
+    pub elapsed: Option<Duration>,
+    pub instant_bps: Option<u64>,
+    pub error: Option<String>,
 }
 
 /// Updates sent from background tasks to the UI.
@@ -139,5 +214,9 @@ pub enum TaskUpdate {
     StageCompleted(usize),
     StageFailed(usize, String),
     Finished(Vec<String>),
+    /// Provide the list of files that will be downloaded (oid, size, dest)
+    SetDownloadList(Vec<(String, Option<u64>, std::path::PathBuf)>),
+    /// Forwarded downloader progress events for per-file updates.
+    DownloaderEvent(crate::downloader::ProgressEvent),
     Aborted,
 }

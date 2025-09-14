@@ -151,15 +151,19 @@ pub fn start_download_job(
         })
     };
 
-    // Main join handle that spawns per-file workers and waits for them and the coordinator.
+    // Main join handle that spawns a bounded-worker pool and waits for them and the coordinator.
     let coordinator_handle = coordinator;
     let instant_map = instant_map.clone();
     let completed_oids = completed_oids.clone();
     let completed_bytes = completed_bytes.clone();
-    let handle = thread::spawn(move || -> DownloadResult {
-        let mut worker_handles = Vec::new();
 
+    let handle = thread::spawn(move || -> DownloadResult {
+        // We'll use a task channel and spawn up to `max_workers` worker threads.
+        let max_workers = std::cmp::min(4, items.len().max(1));
         let total_items = items.len();
+
+    // (using Condvar-backed task queue instead of channel)
+
         // Spawn aggregator thread that emits Aggregate events periodically.
         let agg_tx = progress_tx.clone();
         let agg_instant_map = instant_map.clone();
@@ -202,250 +206,281 @@ pub fn start_download_job(
             });
         });
 
-        for item in items.into_iter() {
+        // Spawn worker threads
+        let mut worker_handles = Vec::new();
+        // Build a Condvar-backed queue so each worker can block independently and be woken fairly.
+        struct TaskQueue {
+            queue: VecDeque<LfsDownloadItem>,
+            closed: bool,
+        }
+        let task_queue = std::sync::Arc::new((std::sync::Mutex::new(TaskQueue { queue: VecDeque::new(), closed: false }), std::sync::Condvar::new()));
+        for _ in 0..max_workers {
             let tx = progress_tx.clone();
             let cancel_all = cancel_all.clone();
             let cancelled_files = cancelled_files.clone();
             let worker_count = worker_count.clone();
             let progress_interval_ms = cfg.progress_interval_ms;
             let coalesce_threshold = cfg.coalesce_threshold_bytes as u64;
-            let oid = item.oid.clone();
-            let dest = item.dest.clone();
-            let size_opt = item.size;
-
             let im = instant_map.clone();
             let coids = completed_oids.clone();
             let cbytes = completed_bytes.clone();
+            let task_queue = task_queue.clone();
+
             let worker = thread::spawn(move || -> (bool, u64) {
-                let started_at = Instant::now();
-                let _ = tx.send(ProgressEvent::Started {
-                    oid: oid.clone(),
-                    total: size_opt,
-                    started_at,
-                });
-
-                let total = size_opt.unwrap_or(256 * 1024);
-                let mut remaining = total;
-                let mut bytes_received = 0u64;
-                let mut window = SlidingWindow::new(progress_interval_ms.max(50));
-                let sleep_dur = Duration::from_millis(progress_interval_ms.max(50) / 2);
-
-                // Coalescing state
-                let mut bytes_accum: u64 = 0;
-                let mut last_send = Instant::now();
-
-                // Construct a .part path sibling for atomic writes.
-                let part_path = match dest.file_name() {
-                    Some(fname) => {
-                        let mut os = std::ffi::OsString::from(fname);
-                        os.push(".part");
-                        if let Some(parent) = dest.parent() {
-                            parent.join(os)
+                // Each worker pulls tasks until the queue is closed and empty.
+                loop {
+                    // Attempt to pop a task from the queue, waiting on the condvar when empty.
+                    let maybe_item = {
+                        let (lock, cvar) = &*task_queue;
+                        let mut q = lock.lock().unwrap();
+                        while q.queue.is_empty() && !q.closed {
+                            q = cvar.wait(q).unwrap();
+                        }
+                        if q.queue.is_empty() && q.closed {
+                            None
                         } else {
-                            PathBuf::from(os)
+                            q.queue.pop_front()
                         }
-                    }
-                    None => {
-                        // Fallback: use dest with added .part extension
-                        let mut p = dest.clone();
-                        let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
-                        p.set_extension(format!("{}{}", ext, ".part"));
-                        p
-                    }
-                };
+                    };
+                    let item = match maybe_item {
+                        Some(it) => it,
+                        None => break, // closed and empty
+                    };
+                    let oid = item.oid.clone();
+                    let dest = item.dest.clone();
+                    let size_opt = item.size;
 
-                // helper to remove partial file and send cancelled event
-                let remove_partial_and_fail = |tx: &mpsc::Sender<ProgressEvent>,
-                                               oid: &str,
-                                               im: &Arc<Mutex<HashMap<String, u64>>>,
-                                               worker_count: &Arc<AtomicUsize>|
-                 -> (bool, u64) {
-                    let _ = std::fs::remove_file(&part_path);
-                    let _ = tx.send(ProgressEvent::Failed {
-                        oid: oid.to_string(),
-                        error: "cancelled".into(),
+                    let started_at = Instant::now();
+                    let _ = tx.send(ProgressEvent::Started {
+                        oid: oid.clone(),
+                        total: size_opt,
+                        started_at,
                     });
-                    worker_count.fetch_sub(1, Ordering::SeqCst);
-                    let _ = im.lock().map(|mut m| m.remove(oid));
-                    (false, 0)
-                };
 
-                while remaining > 0 {
-                    // quick cancel checks before any work
-                    if cancel_all.load(Ordering::SeqCst) {
-                        return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
-                    }
+                    let total = size_opt.unwrap_or(256 * 1024);
+                    let mut remaining = total;
+                    let mut bytes_received = 0u64;
+                    let mut window = SlidingWindow::new(progress_interval_ms.max(50));
+                    let sleep_dur = Duration::from_millis(progress_interval_ms.max(50) / 2);
 
-                    {
-                        let guard = cancelled_files.lock().unwrap();
-                        if guard.contains(&oid) {
-                            return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                    // Coalescing state
+                    let mut bytes_accum: u64 = 0;
+                    let mut last_send = Instant::now();
+
+                    // Construct a .part path sibling for atomic writes.
+                    let part_path = match dest.file_name() {
+                        Some(fname) => {
+                            let mut os = std::ffi::OsString::from(fname);
+                            os.push(".part");
+                            if let Some(parent) = dest.parent() {
+                                parent.join(os)
+                            } else {
+                                PathBuf::from(os)
+                            }
                         }
-                    }
-
-                    let chunk = cmp::min(64 * 1024u64, remaining);
-                    thread::sleep(sleep_dur);
-                    window.add(chunk);
-                    bytes_received += chunk;
-                    remaining -= chunk;
-                    bytes_accum += chunk;
-
-                    // Ensure parent directory exists for the part file.
-                    if let Some(parent) = part_path.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
-
-                    // Append the simulated chunk bytes to the .part file so partial
-                    // state exists on disk in case of interruption.
-                    if let Ok(mut f) = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&part_path)
-                    {
-                        // Write zeroed bytes (simulation). In real downloader this
-                        // would be the actual bytes read from the network.
-                        let write_len = chunk as usize;
-                        // Guard against extremely large writes in tests; cap reasonably.
-                        let max_write = 1024 * 1024; // 1 MiB
-                        let buf = vec![0u8; std::cmp::min(write_len, max_write)];
-                        // If chunk is larger than buf, write in a few iterations.
-                        let mut remaining_to_write = write_len;
-                        while remaining_to_write > 0 {
-                            let cur = std::cmp::min(remaining_to_write, buf.len());
-                            let _ = f.write_all(&buf[..cur]);
-                            remaining_to_write -= cur;
+                        None => {
+                            let mut p = dest.clone();
+                            let ext = dest.extension().and_then(|e| e.to_str()).unwrap_or("");
+                            p.set_extension(format!("{}{}", ext, ".part"));
+                            p
                         }
-                        let _ = f.flush();
-                        #[cfg(unix)]
-                        let _ = f.sync_all();
-                    }
+                    };
 
-                    // always update instant map with latest instant bps
-                    let instant_bps = window.instant_bps();
-                    {
-                        if let Ok(mut map) = im.lock() {
-                            map.insert(oid.clone(), instant_bps);
-                        }
-                    }
+                    // helper to remove partial file and send cancelled event
+                    let remove_partial_and_fail = |tx: &mpsc::Sender<ProgressEvent>,
+                                                   oid: &str,
+                                                   im: &Arc<Mutex<HashMap<String, u64>>>,
+                                                   worker_count: &Arc<AtomicUsize>|
+                     -> (bool, u64) {
+                        let _ = std::fs::remove_file(&part_path);
+                        let _ = tx.send(ProgressEvent::Failed {
+                            oid: oid.to_string(),
+                            error: "cancelled".into(),
+                        });
+                        worker_count.fetch_sub(1, Ordering::SeqCst);
+                        let _ = im.lock().map(|mut m| m.remove(oid));
+                        (false, 0)
+                    };
 
-                    // Check cancellation between sleeps and before sending progress
-                    if cancel_all.load(Ordering::SeqCst) {
-                        return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
-                    }
-                    {
-                        let guard = cancelled_files.lock().unwrap();
-                        if guard.contains(&oid) {
-                            return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
-                        }
-                    }
-
-                    let interval_limit = Duration::from_millis(progress_interval_ms.max(100));
-                    if bytes_accum >= coalesce_threshold || last_send.elapsed() >= interval_limit {
-                        let send_bytes = bytes_accum;
-                        // check once more before sending progress
+                    while remaining > 0 {
+                        // quick cancel checks before any work
                         if cancel_all.load(Ordering::SeqCst) {
-                            return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                            let _ = remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                            break;
+                        }
+
+                        {
+                            let guard = cancelled_files.lock().unwrap();
+                            if guard.contains(&oid) {
+                                let _ = remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                                break;
+                            }
+                        }
+
+                        let chunk = cmp::min(64 * 1024u64, remaining);
+                        thread::sleep(sleep_dur);
+                        window.add(chunk);
+                        bytes_received += chunk;
+                        remaining -= chunk;
+                        bytes_accum += chunk;
+
+                        // Ensure parent directory exists for the part file.
+                        if let Some(parent) = part_path.parent() {
+                            let _ = std::fs::create_dir_all(parent);
+                        }
+
+                        // Append the simulated chunk bytes to the .part file so partial
+                        // state exists on disk in case of interruption.
+                        if let Ok(mut f) = OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open(&part_path)
+                        {
+                            let write_len = chunk as usize;
+                            let max_write = 1024 * 1024; // 1 MiB
+                            let buf = vec![0u8; std::cmp::min(write_len, max_write)];
+                            let mut remaining_to_write = write_len;
+                            while remaining_to_write > 0 {
+                                let cur = std::cmp::min(remaining_to_write, buf.len());
+                                let _ = f.write_all(&buf[..cur]);
+                                remaining_to_write -= cur;
+                            }
+                            let _ = f.flush();
+                            #[cfg(unix)]
+                            let _ = f.sync_all();
+                        }
+
+                        // always update instant map with latest instant bps
+                        let instant_bps = window.instant_bps();
+                        {
+                            if let Ok(mut map) = im.lock() {
+                                map.insert(oid.clone(), instant_bps);
+                            }
+                        }
+
+                        // Check cancellation between sleeps and before sending progress
+                        if cancel_all.load(Ordering::SeqCst) {
+                            let _ = remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                            break;
                         }
                         {
                             let guard = cancelled_files.lock().unwrap();
                             if guard.contains(&oid) {
-                                return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                                let _ = remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                                break;
                             }
                         }
-                        let _ = tx.send(ProgressEvent::Progress {
-                            oid: oid.clone(),
-                            bytes_received,
-                            chunk_bytes: send_bytes,
-                            total: size_opt,
-                            instant_bps,
-                        });
-                        last_send = Instant::now();
-                        bytes_accum = 0;
-                    }
-                }
 
-                // final flush of any accumulated progress
-                if bytes_accum > 0 {
-                    // check cancellation before final flush
-                    if cancel_all.load(Ordering::SeqCst) {
-                        return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                        let interval_limit = Duration::from_millis(progress_interval_ms.max(100));
+                        if bytes_accum >= coalesce_threshold || last_send.elapsed() >= interval_limit {
+                            let send_bytes = bytes_accum;
+                            // check once more before sending progress
+                            if cancel_all.load(Ordering::SeqCst) {
+                                let _ = remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                                break;
+                            }
+                            {
+                                let guard = cancelled_files.lock().unwrap();
+                                if guard.contains(&oid) {
+                                    let _ = remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                                    break;
+                                }
+                            }
+                            let _ = tx.send(ProgressEvent::Progress {
+                                oid: oid.clone(),
+                                bytes_received,
+                                chunk_bytes: send_bytes,
+                                total: size_opt,
+                                instant_bps,
+                            });
+                            last_send = Instant::now();
+                            bytes_accum = 0;
+                        }
                     }
-                    {
+
+                    // final flush of any accumulated progress
+                    if bytes_accum > 0 {
+                        if cancel_all.load(Ordering::SeqCst) {
+                            let _ = remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                        } else {
+                            let instant_bps = window.instant_bps();
+                            let send_bytes = bytes_accum;
+                            let _ = tx.send(ProgressEvent::Progress {
+                                oid: oid.clone(),
+                                bytes_received,
+                                chunk_bytes: send_bytes,
+                                total: size_opt,
+                                instant_bps,
+                            });
+                            if let Ok(mut map) = im.lock() {
+                                map.insert(oid.clone(), window.instant_bps());
+                            }
+                        }
+                    }
+
+                    // final cancellation check before marking completed
+                    if cancel_all.load(Ordering::SeqCst) {
+                        let _ = remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                    } else {
                         let guard = cancelled_files.lock().unwrap();
                         if guard.contains(&oid) {
-                            return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
-                        }
-                    }
+                            let _ = remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                        } else {
+                            // Attempt atomic rename of the .part file into the final destination.
+                            if part_path.exists() {
+                                if let Err(e) = std::fs::rename(&part_path, &dest) {
+                                    if let Err(copy_err) = std::fs::copy(&part_path, &dest)
+                                        .and_then(|_| std::fs::remove_file(&part_path))
+                                    {
+                                        let _ = tx.send(ProgressEvent::Failed {
+                                            oid: oid.clone(),
+                                            error: format!(
+                                                "failed to move part file into place: {} / {}",
+                                                e, copy_err
+                                            ),
+                                        });
+                                        worker_count.fetch_sub(1, Ordering::SeqCst);
+                                        let _ = im.lock().map(|mut m| m.remove(&oid));
+                                        continue;
+                                    }
+                                }
+                            }
 
-                    let instant_bps = window.instant_bps();
-                    let send_bytes = bytes_accum;
-                    let _ = tx.send(ProgressEvent::Progress {
-                        oid: oid.clone(),
-                        bytes_received,
-                        chunk_bytes: send_bytes,
-                        total: size_opt,
-                        instant_bps,
-                    });
-                    // update instant map one last time
-                    if let Ok(mut map) = im.lock() {
-                        map.insert(oid.clone(), window.instant_bps());
-                    }
-                }
-
-                // final cancellation check before marking completed
-                if cancel_all.load(Ordering::SeqCst) {
-                    return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
-                }
-                {
-                    let guard = cancelled_files.lock().unwrap();
-                    if guard.contains(&oid) {
-                        return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
-                    }
-                }
-
-                // Attempt atomic rename of the .part file into the final destination.
-                if part_path.exists() {
-                    if let Err(e) = std::fs::rename(&part_path, &dest) {
-                        // On platforms where rename can't replace an existing file
-                        // (Windows), try copy + remove as a fallback.
-                        if let Err(copy_err) = std::fs::copy(&part_path, &dest)
-                            .and_then(|_| std::fs::remove_file(&part_path))
-                        {
-                            let _ = tx.send(ProgressEvent::Failed {
-                                oid: oid.clone(),
-                                error: format!(
-                                    "failed to move part file into place: {} / {}",
-                                    e, copy_err
-                                ),
-                            });
-                            worker_count.fetch_sub(1, Ordering::SeqCst);
+                            // mark completed in shared state
+                            cbytes.fetch_add(total, Ordering::SeqCst);
+                            if let Ok(mut set) = coids.lock() {
+                                set.insert(oid.clone());
+                            }
                             let _ = im.lock().map(|mut m| m.remove(&oid));
-                            return (false, 0);
+
+                            let elapsed = started_at.elapsed();
+                            let _ = tx.send(ProgressEvent::Completed {
+                                oid: oid.clone(),
+                                path: dest.clone(),
+                                total_bytes: total,
+                                elapsed,
+                            });
+
+                            worker_count.fetch_sub(1, Ordering::SeqCst);
                         }
                     }
                 }
-
-                // mark completed in shared state
-                cbytes.fetch_add(total, Ordering::SeqCst);
-                if let Ok(mut set) = coids.lock() {
-                    set.insert(oid.clone());
-                }
-                // remove instant entry to avoid stale contribution
-                let _ = im.lock().map(|mut m| m.remove(&oid));
-
-                let elapsed = started_at.elapsed();
-                let _ = tx.send(ProgressEvent::Completed {
-                    oid: oid.clone(),
-                    path: dest.clone(),
-                    total_bytes: total,
-                    elapsed,
-                });
-
-                worker_count.fetch_sub(1, Ordering::SeqCst);
-                (true, total)
+                (true, 0)
             });
-
             worker_handles.push(worker);
+        }
+
+        // Enqueue tasks into the shared queue and notify workers.
+        {
+            let (lock, cvar) = &*task_queue;
+            let mut q = lock.lock().unwrap();
+            for item in items.into_iter() {
+                q.queue.push_back(item);
+                cvar.notify_one();
+            }
+            // Mark closed so workers exit when the queue is empty.
+            q.closed = true;
+            cvar.notify_all();
         }
 
         // Drop the original sender so receiver sees only workers' clones.
@@ -456,9 +491,6 @@ pub fn start_download_job(
         }
 
         // Wait for aggregator to finish (it will after worker_count reaches 0).
-        // aggregator was spawned earlier as `aggregator`.
-        // Join aggregator thread by moving its handle out of the scope via shadowing.
-        // Note: aggregator variable exists in this scope.
         let _ = aggregator.join();
 
         // Wait for coordinator to exit (it will when worker_count==0).

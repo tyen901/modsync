@@ -54,4 +54,5 @@ coverage/
 .cache/
 .history/
 
-# Do NOT ignore Cargo.lock for binaries (it's already checked in for this repo)
+temp/
+temp/**

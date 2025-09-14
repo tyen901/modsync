@@ -70,6 +70,50 @@ pub fn render(f: &mut Frame, app: &App) {
             };
             lines.push(format!(" {} {}", status_str, stage));
         }
+
+        // If there are files to show (download phase), render per-file progress below stages.
+        if !task.files.is_empty() {
+            lines.push(String::new());
+            lines.push("Files to download:".to_string());
+            for f in task.files.iter() {
+                let total_str = match f.total {
+                    Some(t) => format!("{}/{} bytes", f.bytes_received, t),
+                    None => format!("{} bytes", f.bytes_received),
+                };
+                // Small helper to format bytes/sec into human readable form.
+                fn fmt_bps(b: u64) -> String {
+                    const KB: f64 = 1024.0;
+                    const MB: f64 = KB * 1024.0;
+                    let b_f = b as f64;
+                    if b_f >= MB {
+                        format!("{:.2} MiB/s", b_f / MB)
+                    } else if b_f >= KB {
+                        format!("{:.1} KiB/s", b_f / KB)
+                    } else {
+                        format!("{} B/s", b)
+                    }
+                }
+
+                let status = if f.completed {
+                    match f.elapsed {
+                        Some(dur) => format!("done ({:.1}s)", dur.as_secs_f64()),
+                        None => "done".to_string(),
+                    }
+                } else if let Some(err) = &f.error {
+                    format!("err: {}", err)
+                } else if f.bytes_received == 0 {
+                    "pending".to_string()
+                } else {
+                    match f.instant_bps {
+                        Some(bps) => fmt_bps(bps),
+                        None => "downloading".to_string(),
+                    }
+                };
+                let short_oid = if f.oid.len() > 8 { &f.oid[..8] } else { &f.oid };
+                lines.push(format!(" {} {} — {}", short_oid, total_str, status));
+            }
+        }
+
         let text = lines.join("\n");
         let widget = Paragraph::new(text)
             .block(
