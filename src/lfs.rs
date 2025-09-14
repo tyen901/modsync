@@ -189,3 +189,212 @@ pub fn azure_lfs_batch_download_and_write_blocking(
     }
     Err(anyhow::anyhow!("LFS batch response did not include download action for {}", oid))
 }
+
+/// Request item for async LFS downloader: one oid may have multiple paths.
+#[derive(Debug, Clone)]
+pub struct LfsRequestItem {
+    pub oid: String,
+    pub size: Option<u64>,
+    pub paths: Vec<std::path::PathBuf>,
+    pub repo_remote: Option<String>,
+}
+
+/// Summary returned by async LFS downloader
+#[derive(Debug, Clone)]
+pub struct LfsDownloadSummary {
+    pub files_done: usize,
+    pub bytes_done: u64,
+}
+
+/// Async LFS downloader which uses the async `AzureClient` from `http.rs`.
+///
+/// This performs a single batch request for all provided OIDs, follows
+/// the download actions, honours action headers (safely), falls back to
+/// `AZURE_DEVOPS_PAT` basic auth when the action doesn't include an
+/// Authorization header, validates size and SHA-256 and writes part files
+/// into `out_dir/.tmp` before copying to each requested destination path.
+pub async fn download_lfs_objects_async(
+    client: &crate::http::AzureClient,
+    items: Vec<LfsRequestItem>,
+    out_dir: &std::path::Path,
+    concurrency: usize,
+) -> Result<LfsDownloadSummary> {
+    use anyhow::Context;
+    use hex;
+    use sha2::{Digest as _, Sha256};
+    use tokio::fs;
+    use tokio::io::AsyncWriteExt;
+
+    // group items by oid (merge paths)
+    let mut oid_map: std::collections::HashMap<String, Vec<(std::path::PathBuf, Option<u64>)>> =
+        std::collections::HashMap::new();
+    for it in items.into_iter() {
+        for p in it.paths.into_iter() {
+            oid_map.entry(it.oid.clone()).or_default().push((p, it.size));
+        }
+    }
+
+    let tmp_base = out_dir.join(".tmp");
+    fs::create_dir_all(&tmp_base)
+        .await
+        .with_context(|| format!("creating tmp dir {}", tmp_base.display()))?;
+
+    // prepare batch request
+    let mut objs: Vec<crate::http::LfsObject> = Vec::new();
+    for (oid, items) in oid_map.iter() {
+        let size = items.first().and_then(|(_, s)| *s);
+        objs.push(crate::http::LfsObject {
+            oid: oid.clone(),
+            size,
+        });
+    }
+    if objs.is_empty() {
+        return Ok(LfsDownloadSummary {
+            files_done: 0,
+            bytes_done: 0,
+        });
+    }
+
+    let batch_req = crate::http::LfsBatchRequest {
+        operation: "download".to_string(),
+        objects: objs,
+    };
+    let batch_resp = client
+        .lfs_batch(batch_req)
+        .await
+        .context("lfs batch failed")?;
+
+    // For concurrency we spawn per-oid async tasks but limit parallelism with a semaphore.
+    use tokio::sync::Semaphore;
+    use std::sync::Arc;
+
+    let sem = Arc::new(Semaphore::new(std::cmp::max(1, concurrency)));
+    // Clone client into an Arc so tasks can own it
+    let arc_client = Arc::new(crate::http::AzureClient {
+        base_url: client.base_url.clone(),
+        token: client.token.clone(),
+        client: client.client.clone(),
+    });
+
+    let mut handles: Vec<(String, tokio::task::JoinHandle<Result<(String, u64, std::path::PathBuf), anyhow::Error>>)> = Vec::new();
+    for obj in batch_resp.objects.into_iter() {
+        let oid = obj.oid;
+        let size = obj.size;
+        let action = match obj.actions.and_then(|mut m| m.remove("download")) {
+            Some(a) => a,
+            None => continue,
+        };
+        let href_opt = action.href;
+        if href_opt.is_none() {
+            continue;
+        }
+
+        let sem_clone = sem.clone();
+        let arc_client = arc_client.clone();
+        let tmp_base = tmp_base.clone();
+        let headers_val = action.header.clone();
+
+        // keep a clone of oid for the joiner; the task will own its own clone
+        let oid_for_join = oid.clone();
+        let oid_for_task = oid.clone();
+
+        let handle = tokio::spawn(async move {
+            // acquire permit
+            let _permit = sem_clone.acquire().await;
+
+            let href = href_opt.unwrap();
+            let sanitized_href = strip_userinfo(&href);
+            let mut req = arc_client.client.get(&sanitized_href);
+
+            let mut auth_header_present = false;
+            if let Some(headers_val) = headers_val {
+                if let Some(obj) = headers_val.as_object() {
+                    for (k, v) in obj.iter() {
+                        let is_safe = k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+                        if !is_safe {
+                            log::warn!("Skipping unsafe header name from LFS action: {}", k);
+                            continue;
+                        }
+                        if let Some(s) = v.as_str() {
+                            if k.eq_ignore_ascii_case("authorization") {
+                                auth_header_present = true;
+                            }
+                            req = req.header(k.as_str(), s);
+                        } else {
+                            log::warn!("Skipping non-string header value for {}", k);
+                        }
+                    }
+                }
+            }
+
+            if !auth_header_present {
+                if let Ok(pat) = std::env::var("AZURE_DEVOPS_PAT") {
+                    req = req.basic_auth("", Some(pat));
+                }
+            }
+
+            let resp = req.send().await.with_context(|| format!("lfs get failed for {}", href))?;
+            let status = resp.status();
+            let bytes = resp.bytes().await.context("read body")?;
+            if !status.is_success() {
+                return Err(anyhow::anyhow!("lfs GET non-success {}: {}", href, status));
+            }
+            if let Some(expected) = size {
+                if bytes.len() as u64 != expected {
+                    return Err(anyhow::anyhow!(
+                        "lfs size mismatch for oid {}: expected {}, got {}",
+                        oid_for_task,
+                        expected,
+                        bytes.len()
+                    ));
+                }
+            }
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let got = hex::encode(<Sha256 as sha2::Digest>::finalize(hasher));
+            if got != oid_for_task {
+                return Err(anyhow::anyhow!(
+                    "lfs oid mismatch for oid {}: expected {}, got {}",
+                    oid_for_task,
+                    oid_for_task,
+                    got
+                ));
+            }
+
+            let part = tmp_base.join(format!("{}.part", oid_for_task));
+            if let Some(parent) = part.parent() {
+                fs::create_dir_all(parent).await.ok();
+            }
+            let mut f = fs::File::create(&part).await.context("create lfs part")?;
+            f.write_all(&bytes).await?;
+            f.flush().await.ok();
+
+            // return oid, length and part path
+            Ok::<(String, u64, std::path::PathBuf), anyhow::Error>((oid_for_task, bytes.len() as u64, part))
+        });
+        handles.push((oid_for_join, handle));
+    }
+
+    let mut files_done: usize = 0;
+    let mut bytes_done: u64 = 0;
+
+    // Collect results and copy part files to other paths
+    for (oid_key, handle) in handles {
+    let (_oid, got_len, part_path) = handle.await.context("join lfs task")??;
+
+    if let Some(paths) = oid_map.get(&oid_key) {
+            for (path, _) in paths {
+                let dest_path = out_dir.join(path);
+                if let Some(parent) = dest_path.parent() {
+                    fs::create_dir_all(parent).await.ok();
+                }
+                fs::copy(&part_path, &dest_path).await.context("copy")?;
+                files_done += 1;
+                bytes_done = bytes_done.saturating_add(got_len);
+            }
+        }
+        let _ = fs::remove_file(&part_path).await;
+    }
+
+    Ok(LfsDownloadSummary { files_done, bytes_done })
+}

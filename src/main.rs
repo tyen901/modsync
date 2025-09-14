@@ -112,7 +112,8 @@ async fn main() -> Result<()> {
     let plan = index::compare_indexes(&local_index, &remote_index);
 
     // Execute plan
-    let summary = downloader::execute_plan(&client, plan, &out_dir).await?;
+    let concurrency = cfg.download_concurrency.unwrap_or(4);
+    let summary = downloader::execute_plan(&client, plan, &out_dir, concurrency).await?;
     println!(
         "Sync complete: files_done={} bytes_done={}",
         summary.files_done, summary.bytes_done

@@ -1,5 +1,5 @@
 use std::cmp;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
@@ -292,11 +292,11 @@ pub async fn execute_plan(
     client: &crate::http::AzureClient,
     plan: crate::index::SyncPlan,
     out_dir: &std::path::Path,
+    concurrency: usize,
 ) -> Result<Summary, anyhow::Error> {
     use anyhow::Context;
     use hex;
     use sha1::{Digest as _, Sha1};
-    use sha2::Sha256;
     use tokio::fs;
     use tokio::io::AsyncWriteExt;
 
@@ -352,91 +352,20 @@ pub async fn execute_plan(
     }
 
     if !plan.lfs.is_empty() {
-        let mut oid_map: HashMap<String, Vec<(PathBuf, Option<u64>)>> = HashMap::new();
+        // Prepare request items for the centralized LFS async downloader
+        let mut req_items: Vec<crate::lfs::LfsRequestItem> = Vec::new();
         for (path, entry) in plan.lfs.into_iter() {
-            oid_map
-                .entry(entry.oid.clone())
-                .or_default()
-                .push((path, Some(entry.size)));
-        }
-        let mut objs: Vec<crate::http::LfsObject> = Vec::new();
-        for (oid, items) in oid_map.iter() {
-            let size = items.first().and_then(|(_, s)| *s);
-            objs.push(crate::http::LfsObject {
-                oid: oid.clone(),
-                size,
+            req_items.push(crate::lfs::LfsRequestItem {
+                oid: entry.oid,
+                size: Some(entry.size),
+                paths: vec![path],
+                repo_remote: None,
             });
         }
-        let batch_req = crate::http::LfsBatchRequest {
-            operation: "download".to_string(),
-            objects: objs,
-        };
-        let batch_resp = client
-            .lfs_batch(batch_req)
-            .await
-            .context("lfs batch failed")?;
-        for obj in batch_resp.objects.into_iter() {
-            let oid = obj.oid;
-            let size = obj.size;
-            let href_opt = obj
-                .actions
-                .and_then(|mut acts| acts.remove("download").and_then(|a| a.href));
-            let href = match href_opt {
-                Some(h) => h,
-                None => continue,
-            };
-            let resp = client
-                .client
-                .get(&href)
-                .send()
-                .await
-                .context("lfs get failed")?;
-            let status = resp.status();
-            let bytes = resp.bytes().await.context("read body")?;
-            if !status.is_success() {
-                return Err(anyhow::anyhow!("lfs GET non-success {}: {}", href, status));
-            }
-            if let Some(expected) = size {
-                if bytes.len() as u64 != expected {
-                    return Err(anyhow::anyhow!(
-                        "lfs size mismatch for oid {}: expected {}, got {}",
-                        oid,
-                        expected,
-                        bytes.len()
-                    ));
-                }
-            }
-            let mut hasher = Sha256::new();
-            hasher.update(&bytes);
-            let got = hex::encode(<Sha256 as sha2::Digest>::finalize(hasher));
-            if got != oid {
-                return Err(anyhow::anyhow!(
-                    "lfs oid mismatch for oid {}: expected {}, got {}",
-                    oid,
-                    oid,
-                    got
-                ));
-            }
-            let part = tmp_base.join(format!("{}.part", oid));
-            if let Some(parent) = part.parent() {
-                fs::create_dir_all(parent).await.ok();
-            }
-            let mut f = fs::File::create(&part).await.context("create lfs part")?;
-            f.write_all(&bytes).await?;
-            f.flush().await.ok();
-            if let Some(paths) = oid_map.get(&oid) {
-                for (path, _) in paths {
-                    let dest_path = out_dir.join(path);
-                    if let Some(parent) = dest_path.parent() {
-                        fs::create_dir_all(parent).await.ok();
-                    }
-                    fs::copy(&part, &dest_path).await.context("copy")?;
-                    lfs_downloaded += 1;
-                    bytes_done = bytes_done.saturating_add(bytes.len() as u64);
-                }
-            }
-            let _ = fs::remove_file(&part).await;
-        }
+
+    let summary = crate::lfs::download_lfs_objects_async(client, req_items, out_dir, concurrency).await?;
+        lfs_downloaded = summary.files_done;
+        bytes_done = bytes_done.saturating_add(summary.bytes_done);
     }
 
     Ok(Summary {

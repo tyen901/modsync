@@ -45,6 +45,9 @@ pub struct Config {
     /// Path on disk where the modpack files (the actual `.pbo`s) should be
     /// stored.  If the directory does not exist it will be created.
     pub target_mod_dir: PathBuf,
+    /// Optional limit for concurrent LFS downloads. When omitted a default of 4 will be used.
+    #[serde(default)]
+    pub download_concurrency: Option<usize>,
     /// Optional path to the Arma 3 executable.  If this is `None` the
     /// application will attempt to discover a suitable path automatically.
     pub arma_executable: Option<PathBuf>,
@@ -65,6 +68,7 @@ impl Default for Config {
                 "https://peanutcommunityarma@dev.azure.com/peanutcommunityarma/pca/_git/xyi",
             ),
             target_mod_dir: target_mod,
+            download_concurrency: None,
             arma_executable: None,
         }
     }
