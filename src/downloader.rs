@@ -250,7 +250,7 @@ pub fn start_download_job(
                 }
 
                 // finalize
-                if let Some(mut fh) = f {
+                if let Some(fh) = f {
                     let _ = fh.sync_all();
                 }
                 if let Err(e) = std::fs::rename(&part_path, &item.dest) {

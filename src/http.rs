@@ -85,7 +85,7 @@ impl AzureClient {
             path = urlencoding::encode(path),
             commit = commit
         );
-        let mut req = self.client.get(&url);
+        let req = self.client.get(&url);
         // If a token is provided we do not assume a specific auth scheme here.
         // For public repos token is usually not required. Callers may extend this.
         if let Some(_) = &self.token {
@@ -113,7 +113,7 @@ impl AzureClient {
             base = base,
             oid = oid
         );
-        let mut req = self.client.get(&url);
+        let req = self.client.get(&url);
         if let Some(_) = &self.token {
             // no-op for now
         }
@@ -134,7 +134,7 @@ impl AzureClient {
     pub async fn lfs_batch(&self, req_body: LfsBatchRequest) -> Result<LfsBatchResponse, Error> {
         let base = self.base_url.as_str().trim_end_matches('/');
         let url = format!("{base}/info/lfs/objects/batch", base = base);
-        let mut req = self
+        let req = self
             .client
             .post(&url)
             .header("Accept", "application/vnd.git-lfs+json")

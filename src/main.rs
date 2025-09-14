@@ -2,8 +2,6 @@
 use anyhow::Result;
 use clap::Parser;
 use modsync::{config::Config, downloader, http::AzureClient, index};
-use std::path::Path;
-use tokio::io::AsyncWriteExt;
 
 #[derive(Parser)]
 struct Opts {

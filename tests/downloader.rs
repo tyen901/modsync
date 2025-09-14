@@ -2,7 +2,9 @@ use std::collections::HashSet;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
-use modsync::{ControlCommand, DownloaderConfig, LfsDownloadItem, ProgressEvent, start_download_job};
+use modsync::{
+    start_download_job, ControlCommand, DownloaderConfig, LfsDownloadItem, ProgressEvent,
+};
 
 fn spawn_job_and_channel(
     items: Vec<LfsDownloadItem>,
