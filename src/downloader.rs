@@ -1,11 +1,14 @@
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
-use std::collections::{VecDeque, HashSet, HashMap};
-use std::sync::{Arc, Mutex, mpsc, atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering}};
-use std::thread;
 use std::cmp;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::PathBuf;
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    mpsc, Arc, Mutex,
+};
+use std::thread;
+use std::time::{Duration, Instant};
 
 struct SlidingWindow {
     window: Duration,
@@ -86,9 +89,7 @@ pub enum ProgressEvent {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ControlCommand {
     CancelAll,
-    CancelFile {
-        oid: String,
-    },
+    CancelFile { oid: String },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,7 +201,7 @@ pub fn start_download_job(
                 instant_bps,
             });
         });
- 
+
         for item in items.into_iter() {
             let tx = progress_tx.clone();
             let cancel_all = cancel_all.clone();
@@ -222,17 +223,17 @@ pub fn start_download_job(
                     total: size_opt,
                     started_at,
                 });
- 
+
                 let total = size_opt.unwrap_or(256 * 1024);
                 let mut remaining = total;
                 let mut bytes_received = 0u64;
                 let mut window = SlidingWindow::new(progress_interval_ms.max(50));
                 let sleep_dur = Duration::from_millis(progress_interval_ms.max(50) / 2);
- 
+
                 // Coalescing state
                 let mut bytes_accum: u64 = 0;
                 let mut last_send = Instant::now();
- 
+
                 // Construct a .part path sibling for atomic writes.
                 let part_path = match dest.file_name() {
                     Some(fname) => {
@@ -254,7 +255,11 @@ pub fn start_download_job(
                 };
 
                 // helper to remove partial file and send cancelled event
-                let remove_partial_and_fail = |tx: &mpsc::Sender<ProgressEvent>, oid: &str, im: &Arc<Mutex<HashMap<String, u64>>>, worker_count: &Arc<AtomicUsize>| -> (bool, u64) {
+                let remove_partial_and_fail = |tx: &mpsc::Sender<ProgressEvent>,
+                                               oid: &str,
+                                               im: &Arc<Mutex<HashMap<String, u64>>>,
+                                               worker_count: &Arc<AtomicUsize>|
+                 -> (bool, u64) {
                     let _ = std::fs::remove_file(&part_path);
                     let _ = tx.send(ProgressEvent::Failed {
                         oid: oid.to_string(),
@@ -264,20 +269,20 @@ pub fn start_download_job(
                     let _ = im.lock().map(|mut m| m.remove(oid));
                     (false, 0)
                 };
- 
+
                 while remaining > 0 {
                     // quick cancel checks before any work
                     if cancel_all.load(Ordering::SeqCst) {
                         return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
                     }
- 
+
                     {
                         let guard = cancelled_files.lock().unwrap();
                         if guard.contains(&oid) {
-                           return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                            return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
                         }
                     }
- 
+
                     let chunk = cmp::min(64 * 1024u64, remaining);
                     thread::sleep(sleep_dur);
                     window.add(chunk);
@@ -292,7 +297,11 @@ pub fn start_download_job(
 
                     // Append the simulated chunk bytes to the .part file so partial
                     // state exists on disk in case of interruption.
-                    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&part_path) {
+                    if let Ok(mut f) = OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(&part_path)
+                    {
                         // Write zeroed bytes (simulation). In real downloader this
                         // would be the actual bytes read from the network.
                         let write_len = chunk as usize;
@@ -310,7 +319,7 @@ pub fn start_download_job(
                         #[cfg(unix)]
                         let _ = f.sync_all();
                     }
- 
+
                     // always update instant map with latest instant bps
                     let instant_bps = window.instant_bps();
                     {
@@ -318,7 +327,7 @@ pub fn start_download_job(
                             map.insert(oid.clone(), instant_bps);
                         }
                     }
- 
+
                     // Check cancellation between sleeps and before sending progress
                     if cancel_all.load(Ordering::SeqCst) {
                         return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
@@ -326,21 +335,21 @@ pub fn start_download_job(
                     {
                         let guard = cancelled_files.lock().unwrap();
                         if guard.contains(&oid) {
-                          return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                            return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
                         }
                     }
- 
+
                     let interval_limit = Duration::from_millis(progress_interval_ms.max(100));
                     if bytes_accum >= coalesce_threshold || last_send.elapsed() >= interval_limit {
                         let send_bytes = bytes_accum;
                         // check once more before sending progress
                         if cancel_all.load(Ordering::SeqCst) {
-                           return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                            return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
                         }
                         {
                             let guard = cancelled_files.lock().unwrap();
                             if guard.contains(&oid) {
-                              return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                                return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
                             }
                         }
                         let _ = tx.send(ProgressEvent::Progress {
@@ -354,7 +363,7 @@ pub fn start_download_job(
                         bytes_accum = 0;
                     }
                 }
- 
+
                 // final flush of any accumulated progress
                 if bytes_accum > 0 {
                     // check cancellation before final flush
@@ -364,10 +373,10 @@ pub fn start_download_job(
                     {
                         let guard = cancelled_files.lock().unwrap();
                         if guard.contains(&oid) {
-                           return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
+                            return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
                         }
                     }
- 
+
                     let instant_bps = window.instant_bps();
                     let send_bytes = bytes_accum;
                     let _ = tx.send(ProgressEvent::Progress {
@@ -382,7 +391,7 @@ pub fn start_download_job(
                         map.insert(oid.clone(), window.instant_bps());
                     }
                 }
- 
+
                 // final cancellation check before marking completed
                 if cancel_all.load(Ordering::SeqCst) {
                     return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
@@ -393,16 +402,21 @@ pub fn start_download_job(
                         return remove_partial_and_fail(&tx, &oid, &im, &worker_count);
                     }
                 }
- 
+
                 // Attempt atomic rename of the .part file into the final destination.
                 if part_path.exists() {
                     if let Err(e) = std::fs::rename(&part_path, &dest) {
                         // On platforms where rename can't replace an existing file
                         // (Windows), try copy + remove as a fallback.
-                        if let Err(copy_err) = std::fs::copy(&part_path, &dest).and_then(|_| std::fs::remove_file(&part_path)) {
+                        if let Err(copy_err) = std::fs::copy(&part_path, &dest)
+                            .and_then(|_| std::fs::remove_file(&part_path))
+                        {
                             let _ = tx.send(ProgressEvent::Failed {
                                 oid: oid.clone(),
-                                error: format!("failed to move part file into place: {} / {}", e, copy_err),
+                                error: format!(
+                                    "failed to move part file into place: {} / {}",
+                                    e, copy_err
+                                ),
                             });
                             worker_count.fetch_sub(1, Ordering::SeqCst);
                             let _ = im.lock().map(|mut m| m.remove(&oid));
@@ -418,7 +432,7 @@ pub fn start_download_job(
                 }
                 // remove instant entry to avoid stale contribution
                 let _ = im.lock().map(|mut m| m.remove(&oid));
- 
+
                 let elapsed = started_at.elapsed();
                 let _ = tx.send(ProgressEvent::Completed {
                     oid: oid.clone(),
@@ -426,39 +440,39 @@ pub fn start_download_job(
                     total_bytes: total,
                     elapsed,
                 });
- 
+
                 worker_count.fetch_sub(1, Ordering::SeqCst);
                 (true, total)
             });
- 
+
             worker_handles.push(worker);
         }
 
         // Drop the original sender so receiver sees only workers' clones.
         drop(progress_tx);
- 
+
         for wh in worker_handles {
             let _ = wh.join();
         }
- 
+
         // Wait for aggregator to finish (it will after worker_count reaches 0).
         // aggregator was spawned earlier as `aggregator`.
         // Join aggregator thread by moving its handle out of the scope via shadowing.
         // Note: aggregator variable exists in this scope.
         let _ = aggregator.join();
- 
+
         // Wait for coordinator to exit (it will when worker_count==0).
         let _ = coordinator_handle.join();
- 
+
         // Build summary from shared completed state
         let files_done = completed_oids.lock().map(|s| s.len()).unwrap_or(0);
         let bytes_done = completed_bytes.load(Ordering::SeqCst);
- 
+
         Ok(Summary {
             files_done,
             bytes_done,
         })
     });
- 
+
     (progress_rx, control_tx, handle)
 }

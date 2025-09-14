@@ -7,10 +7,10 @@
 //! certain keys are pressed (e.g. the Enter key) it delegates to the
 //! [`actions`] module to perform the selected operation.
 
+use super::actions;
+use super::state::App;
 use anyhow::Result;
 use crossterm::event::{Event, KeyCode, KeyEventKind};
-use super::state::App;
-use super::actions;
 
 /// Processes a single terminal event and updates the application state
 /// accordingly.  Returns `Ok(true)` if the event loop should

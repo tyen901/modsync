@@ -21,7 +21,6 @@ async fn main() -> Result<()> {
     // stderr.
     let config = config::Config::load()?;
 
-
     // Create and run the TUI.  The UI holds its own copy of the
     // configuration and updates it as the user makes changes.  When
     // returning from `run` the configuration is automatically persisted.

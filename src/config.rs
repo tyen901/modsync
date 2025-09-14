@@ -8,8 +8,8 @@
 //! is launched it will write a default configuration file if none exists.
 
 use anyhow::{Context, Result};
-use std::env;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use toml;
@@ -61,7 +61,9 @@ impl Default for Config {
             .unwrap_or_else(|| std::path::PathBuf::from("."));
         let target_mod = exe_parent.join("mods");
         Self {
-            repo_url: String::from("https://peanutcommunityarma@dev.azure.com/peanutcommunityarma/pca/_git/xyi"),
+            repo_url: String::from(
+                "https://peanutcommunityarma@dev.azure.com/peanutcommunityarma/pca/_git/xyi",
+            ),
             target_mod_dir: target_mod,
             arma_executable: None,
         }
@@ -82,8 +84,11 @@ impl Config {
     /// Private state file location (stores previous repo URL etc). This is
     /// stored next to the executable and is not user editable.
     fn state_path() -> Result<PathBuf> {
-        let exe = env::current_exe().with_context(|| "Unable to determine current executable path")?;
-        let dir = exe.parent().ok_or_else(|| anyhow::anyhow!("Executable has no parent directory"))?;
+        let exe =
+            env::current_exe().with_context(|| "Unable to determine current executable path")?;
+        let dir = exe
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Executable has no parent directory"))?;
         Ok(dir.join("state.txt"))
     }
 
@@ -108,9 +113,8 @@ impl Config {
     pub fn save_state(state: &PrivateState) -> Result<()> {
         let state_path = Self::state_path()?;
         let toml = toml::to_string_pretty(state).context("Failed to serialise state to TOML")?;
-        fs::write(&state_path, toml).with_context(|| {
-            format!("Failed to write state file to {}", state_path.display())
-        })?;
+        fs::write(&state_path, toml)
+            .with_context(|| format!("Failed to write state file to {}", state_path.display()))?;
         Ok(())
     }
 
@@ -145,8 +149,11 @@ impl Config {
         // Always place the configuration file in the same directory as the
         // executable.  If we cannot determine the executable path return an
         // error rather than falling back to platform-specific locations.
-        let exe = env::current_exe().with_context(|| "Unable to determine current executable path")?;
-        let dir = exe.parent().ok_or_else(|| anyhow::anyhow!("Executable has no parent directory"))?;
+        let exe =
+            env::current_exe().with_context(|| "Unable to determine current executable path")?;
+        let dir = exe
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Executable has no parent directory"))?;
         Ok(dir.join("config.txt"))
     }
 
@@ -188,7 +195,8 @@ impl Config {
             return Ok(());
         }
 
-        let toml = toml::to_string_pretty(self).context("Failed to serialise configuration to TOML")?;
+        let toml =
+            toml::to_string_pretty(self).context("Failed to serialise configuration to TOML")?;
         fs::write(&config_path, toml).with_context(|| {
             format!(
                 "Failed to write configuration file to {}",

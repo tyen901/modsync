@@ -7,11 +7,11 @@
 //! entry point is [`dispatch`], which examines the selected menu item
 //! and spawns the appropriate action.
 
-use anyhow::Result;
 use super::state::App;
-use tokio::task;
-use crate::{gitutils, modpack, arma};
 use super::state::TaskUpdate;
+use crate::{arma, gitutils, modpack};
+use anyhow::Result;
+use tokio::task;
 
 /// Dispatches the selected menu entry.  This function spawns
 /// blocking operations on a threadpool so as not to block the async
@@ -30,7 +30,10 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
                 "Sync files".to_string(),
             ];
             // Notify UI a task is starting.
-            let _ = task_tx.send(TaskUpdate::Start { name: "Sync Modpack".to_string(), stages: stages.clone() });
+            let _ = task_tx.send(TaskUpdate::Start {
+                name: "Sync Modpack".to_string(),
+                stages: stages.clone(),
+            });
             task::spawn_blocking(move || {
                 // Stage 0: prepare
                 let _ = task_tx.send(TaskUpdate::StageStarted(0));
@@ -73,8 +76,15 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
         Some("Validate Files") => {
             let config = app.config.clone();
             let task_tx = app.task_tx.clone();
-            let stages = vec!["Prepare".to_string(), "Run validation".to_string(), "Report".to_string()];
-            let _ = task_tx.send(TaskUpdate::Start { name: "Validate Files".to_string(), stages: stages.clone() });
+            let stages = vec![
+                "Prepare".to_string(),
+                "Run validation".to_string(),
+                "Report".to_string(),
+            ];
+            let _ = task_tx.send(TaskUpdate::Start {
+                name: "Validate Files".to_string(),
+                stages: stages.clone(),
+            });
             task::spawn_blocking(move || {
                 let _ = task_tx.send(TaskUpdate::StageStarted(0));
                 let repo_path = config.repo_cache_path();
@@ -111,8 +121,15 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
         Some("Check Updates") => {
             let config = app.config.clone();
             let task_tx = app.task_tx.clone();
-            let stages = vec!["Prepare".to_string(), "Fetch".to_string(), "Compare heads".to_string()];
-            let _ = task_tx.send(TaskUpdate::Start { name: "Check Updates".to_string(), stages: stages.clone() });
+            let stages = vec![
+                "Prepare".to_string(),
+                "Fetch".to_string(),
+                "Compare heads".to_string(),
+            ];
+            let _ = task_tx.send(TaskUpdate::Start {
+                name: "Check Updates".to_string(),
+                stages: stages.clone(),
+            });
             task::spawn_blocking(move || {
                 let _ = task_tx.send(TaskUpdate::StageStarted(0));
                 if let Err(e) = config.ensure_repo_cache_for_url() {
@@ -133,15 +150,15 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
                         let mut state_lines = Vec::new();
                         match (before, after) {
                             (Some(b), Some(a)) => {
-                                        if b != a {
-                                            state_lines.push("Update available".to_string());
-                                        } else {
-                                            state_lines.push("Up to date".to_string());
-                                        }
+                                if b != a {
+                                    state_lines.push("Update available".to_string());
+                                } else {
+                                    state_lines.push("Up to date".to_string());
+                                }
                             }
                             _ => {
-                                    state_lines.push("Could not determine update status".to_string());
-                                }
+                                state_lines.push("Could not determine update status".to_string());
+                            }
                         }
                         let _ = task_tx.send(TaskUpdate::StageCompleted(1));
                         let _ = task_tx.send(TaskUpdate::Finished(state_lines));
@@ -156,8 +173,15 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
         Some("Join Server") => {
             let config = app.config.clone();
             let task_tx = app.task_tx.clone();
-            let stages = vec!["Read metadata".to_string(), "Find Arma".to_string(), "Launch".to_string()];
-            let _ = task_tx.send(TaskUpdate::Start { name: "Join Server".to_string(), stages: stages.clone() });
+            let stages = vec![
+                "Read metadata".to_string(),
+                "Find Arma".to_string(),
+                "Launch".to_string(),
+            ];
+            let _ = task_tx.send(TaskUpdate::Start {
+                name: "Join Server".to_string(),
+                stages: stages.clone(),
+            });
             task::spawn_blocking(move || match config.read_metadata() {
                 Ok(Some(meta)) => {
                     let _ = task_tx.send(TaskUpdate::StageStarted(0));
@@ -169,16 +193,23 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
                             match arma::launch_arma(&path, &meta) {
                                 Ok(()) => {
                                     let _ = task_tx.send(TaskUpdate::StageCompleted(1));
-                                    let _ = task_tx.send(TaskUpdate::Finished(vec![format!("Launched {}", path.display())]));
+                                    let _ = task_tx.send(TaskUpdate::Finished(vec![format!(
+                                        "Launched {}",
+                                        path.display()
+                                    )]));
                                 }
                                 Err(_e) => {
-                                    let _ = task_tx.send(TaskUpdate::StageFailed(1, format!("{_e}")));
+                                    let _ =
+                                        task_tx.send(TaskUpdate::StageFailed(1, format!("{_e}")));
                                     let _ = task_tx.send(TaskUpdate::Aborted);
                                 }
                             }
                         }
                         None => {
-                            let _ = task_tx.send(TaskUpdate::StageFailed(1, "Could not determine Arma executable path".to_string()));
+                            let _ = task_tx.send(TaskUpdate::StageFailed(
+                                1,
+                                "Could not determine Arma executable path".to_string(),
+                            ));
                             let _ = task_tx.send(TaskUpdate::Aborted);
                         }
                     }

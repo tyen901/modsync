@@ -72,7 +72,11 @@ pub fn render(f: &mut Frame, app: &App) {
         }
         let text = lines.join("\n");
         let widget = Paragraph::new(text)
-            .block(Block::default().title("Task Progress").borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .title("Task Progress")
+                    .borders(Borders::ALL),
+            )
             .wrap(Wrap { trim: true });
         f.render_widget(widget, right);
     } else {
@@ -91,7 +95,11 @@ pub fn render(f: &mut Frame, app: &App) {
         lines.extend(app.modpack_state.clone());
         let text = lines.join("\n");
         let widget = Paragraph::new(text)
-            .block(Block::default().title("Config / Modpack").borders(Borders::ALL))
+            .block(
+                Block::default()
+                    .title("Config / Modpack")
+                    .borders(Borders::ALL),
+            )
             .wrap(Wrap { trim: true });
         f.render_widget(widget, right);
     }

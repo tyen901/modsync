@@ -63,7 +63,12 @@ fn e2e_downloads_reports_aggregate_and_summary() {
             while Instant::now() < deadline {
                 match rx.recv_timeout(Duration::from_millis(250)) {
                     Ok(ev) => match ev {
-                        ProgressEvent::Aggregate { files_done, bytes_done, instant_bps, .. } => {
+                        ProgressEvent::Aggregate {
+                            files_done,
+                            bytes_done,
+                            instant_bps,
+                            ..
+                        } => {
                             let mut s = agg_seen.lock().unwrap();
                             *s = true;
                             if instant_bps > 0 {
@@ -100,7 +105,12 @@ fn e2e_downloads_reports_aggregate_and_summary() {
             // Drain remaining non-blocking events.
             while let Ok(ev) = rx.try_recv() {
                 match ev {
-                    ProgressEvent::Aggregate { files_done, bytes_done, instant_bps, .. } => {
+                    ProgressEvent::Aggregate {
+                        files_done,
+                        bytes_done,
+                        instant_bps,
+                        ..
+                    } => {
                         let mut s = agg_seen.lock().unwrap();
                         *s = true;
                         if instant_bps > 0 {
@@ -150,5 +160,8 @@ fn e2e_downloads_reports_aggregate_and_summary() {
     assert!(saw_agg, "Expected at least one Aggregate event");
     assert!(saw_positive, "Expected an Aggregate with instant_bps > 0");
     assert_eq!(completed_count, 3, "Expected three Completed events");
-    assert_eq!(agg_bytes, expected_bytes, "Final aggregate bytes_done mismatch");
+    assert_eq!(
+        agg_bytes, expected_bytes,
+        "Final aggregate bytes_done mismatch"
+    );
 }

@@ -10,13 +10,13 @@
 //! checking for updates and launching Arma.  See each submodule for
 //! further details.
 
+pub mod actions;
+pub mod event;
 pub mod state;
 pub mod view;
-pub mod event;
-pub mod actions;
 
 use anyhow::Result;
-use ratatui::{Terminal, backend::CrosstermBackend};
+use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io::Stdout;
 
 /// Convenience re‑export so callers only need to import `modsync::ui::App`.
@@ -35,8 +35,13 @@ impl App {
     /// settings.  Returning an error from this method will restore the
     /// terminal state before propagating the error.
     pub async fn run(&mut self) -> Result<()> {
-    use crossterm::{execute, terminal::{EnterAlternateScreen, LeaveAlternateScreen, enable_raw_mode, disable_raw_mode}};
-    use std::io;
+        use crossterm::{
+            execute,
+            terminal::{
+                disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+            },
+        };
+        use std::io;
 
         // Enable raw mode and switch to the alternate screen.
         enable_raw_mode().context("Failed to enable raw mode")?;
@@ -63,8 +68,8 @@ impl App {
     /// current state and processes input events.  The loop terminates
     /// when [`event::handle_event`] signals to exit.
     async fn run_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
-        use std::time::Duration;
         use crossterm::event as crossterm_event;
+        use std::time::Duration;
 
         loop {
             // Drain task updates and apply them to the app state.

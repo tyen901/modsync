@@ -34,7 +34,8 @@ fn build_remote_callbacks() -> RemoteCallbacks<'static> {
         }
 
         // Otherwise fall back to GIT_USERNAME / GIT_PASSWORD.
-        if let (Ok(user), Ok(pass)) = (std::env::var("GIT_USERNAME"), std::env::var("GIT_PASSWORD")) {
+        if let (Ok(user), Ok(pass)) = (std::env::var("GIT_USERNAME"), std::env::var("GIT_PASSWORD"))
+        {
             return Cred::userpass_plaintext(&user, &pass);
         }
 
@@ -112,7 +113,10 @@ pub fn clone_or_open_repo(url: &str, path: &Path) -> Result<Repository> {
                 } else {
                     // No origin URL found — treat as stale and remove.
                     std::fs::remove_dir_all(path).with_context(|| {
-                        format!("Removed cached repository at {} (no 'origin' URL)", path.display())
+                        format!(
+                            "Removed cached repository at {} (no 'origin' URL)",
+                            path.display()
+                        )
                     })?;
                 }
             }

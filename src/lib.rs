@@ -8,4 +8,4 @@ mod downloader;
 
 // Re-export commonly used types for convenience in integration tests.
 pub use config::Config;
-pub use downloader::{LfsDownloadItem, ProgressEvent, ControlCommand, DownloaderConfig};
+pub use downloader::{ControlCommand, DownloaderConfig, LfsDownloadItem, ProgressEvent};

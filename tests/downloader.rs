@@ -8,7 +8,10 @@ use modsync::{ControlCommand, DownloaderConfig, LfsDownloadItem, ProgressEvent};
 fn spawn_job_and_channel(
     items: Vec<LfsDownloadItem>,
     cfg: DownloaderConfig,
-) -> (std::sync::mpsc::Sender<ControlCommand>, mpsc::Receiver<ProgressEvent>) {
+) -> (
+    std::sync::mpsc::Sender<ControlCommand>,
+    mpsc::Receiver<ProgressEvent>,
+) {
     let (tx, rx) = mpsc::channel::<ProgressEvent>();
     let on_event = move |ev: ProgressEvent| {
         // Best-effort: ignore send failures (test may have stopped receiving).
@@ -49,34 +52,32 @@ fn test_progress_events_sequence() {
     let mut at_least_one_bps_positive = false;
     while Instant::now() < deadline {
         match rx.recv_timeout(Duration::from_millis(200)) {
-            Ok(ev) => {
-                match &ev {
-                    ProgressEvent::Started { oid: eoid, .. } => {
-                        if *eoid == oid {
-                            seen_started = true;
-                        }
+            Ok(ev) => match &ev {
+                ProgressEvent::Started { oid: eoid, .. } => {
+                    if *eoid == oid {
+                        seen_started = true;
                     }
-                    ProgressEvent::Progress {
-                        oid: eoid,
-                        instant_bps,
-                        ..
-                    } => {
-                        if *eoid == oid {
-                            seen_progress += 1;
-                            if *instant_bps > 0 {
-                                at_least_one_bps_positive = true;
-                            }
-                        }
-                    }
-                    ProgressEvent::Completed { oid: eoid, .. } => {
-                        if *eoid == oid {
-                            seen_completed = true;
-                            break;
-                        }
-                    }
-                    _ => {}
                 }
-            }
+                ProgressEvent::Progress {
+                    oid: eoid,
+                    instant_bps,
+                    ..
+                } => {
+                    if *eoid == oid {
+                        seen_progress += 1;
+                        if *instant_bps > 0 {
+                            at_least_one_bps_positive = true;
+                        }
+                    }
+                }
+                ProgressEvent::Completed { oid: eoid, .. } => {
+                    if *eoid == oid {
+                        seen_completed = true;
+                        break;
+                    }
+                }
+                _ => {}
+            },
             Err(_) => {
                 // timeout waiting for more events; break out if deadline exceeded
             }
@@ -89,7 +90,10 @@ fn test_progress_events_sequence() {
     assert!(seen_started, "Expected a Started event for oid");
     assert!(seen_progress >= 1, "Expected one or more Progress events");
     assert!(seen_completed, "Expected a Completed event for oid");
-    assert!(at_least_one_bps_positive, "Expected at least one Progress event with instant_bps > 0");
+    assert!(
+        at_least_one_bps_positive,
+        "Expected at least one Progress event with instant_bps > 0"
+    );
 }
 
 #[test]

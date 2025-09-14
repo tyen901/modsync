@@ -11,13 +11,13 @@
 //! or implement your own download mechanism.
 
 use anyhow::{Context, Result};
+use git2 as git2_crate;
 use sha2::{Digest, Sha256};
-use std::fs;
 use std::ffi::OsStr;
+use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
-use git2 as git2_crate;
 
 /// Parses a Git LFS pointer file and extracts the SHA‑256 of the content it
 /// refers to.  A typical pointer file looks like this:
@@ -45,7 +45,11 @@ pub fn parse_lfs_pointer_file(path: &Path) -> Result<Option<LfsPointer>> {
     // tools may insert leading bytes (BOMs, CRLF conversions) so search for
     // the marker anywhere in the file instead of insisting on it at byte 0.
     let version_prefix = b"version https://git-lfs.github.com/spec/";
-    if data.windows(version_prefix.len()).position(|w| w == version_prefix).is_none() {
+    if data
+        .windows(version_prefix.len())
+        .position(|w| w == version_prefix)
+        .is_none()
+    {
         return Ok(None);
     }
 
@@ -72,7 +76,10 @@ pub fn parse_lfs_pointer_file(path: &Path) -> Result<Option<LfsPointer>> {
     // Try to parse size line if present.
     let size_needle = b"size ";
     let mut found_size: Option<u64> = None;
-    if let Some(pos) = data.windows(size_needle.len()).position(|w| w == size_needle) {
+    if let Some(pos) = data
+        .windows(size_needle.len())
+        .position(|w| w == size_needle)
+    {
         let num_start = pos + size_needle.len();
         let mut num_end = num_start;
         while num_end < data.len() {
@@ -83,14 +90,20 @@ pub fn parse_lfs_pointer_file(path: &Path) -> Result<Option<LfsPointer>> {
             num_end += 1;
         }
         if num_end > num_start {
-            if let Ok(s) = String::from_utf8_lossy(&data[num_start..num_end]).trim().parse::<u64>() {
+            if let Ok(s) = String::from_utf8_lossy(&data[num_start..num_end])
+                .trim()
+                .parse::<u64>()
+            {
                 found_size = Some(s);
             }
         }
     }
 
     if let Some(oid) = found_oid {
-        return Ok(Some(LfsPointer { oid, size: found_size }));
+        return Ok(Some(LfsPointer {
+            oid,
+            size: found_size,
+        }));
     }
     Ok(None)
 }
@@ -117,7 +130,12 @@ pub fn compute_sha256(path: &Path) -> Result<String> {
 /// The default implementation is a stub – in a real application you could
 /// call `git lfs fetch` or use the GitHub/GitLab LFS API.  This function
 /// creates the destination directory if it does not exist.
-fn download_lfs_object(sha: &str, dest: &Path, repo_remote: Option<&str>, size: Option<u64>) -> Result<()> {
+fn download_lfs_object(
+    sha: &str,
+    dest: &Path,
+    repo_remote: Option<&str>,
+    size: Option<u64>,
+) -> Result<()> {
     // Ensure the parent directory exists so that we can write into it.
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
@@ -148,7 +166,11 @@ fn download_lfs_object(sha: &str, dest: &Path, repo_remote: Option<&str>, size: 
     if let Some(remote) = repo_remote {
         let sanitized = strip_userinfo(remote);
         let lower = sanitized.to_ascii_lowercase();
-        if lower.contains("dev.azure.com") || lower.contains("visualstudio.com") || lower.contains("azure") || lower.contains("visualstudio") {
+        if lower.contains("dev.azure.com")
+            || lower.contains("visualstudio.com")
+            || lower.contains("azure")
+            || lower.contains("visualstudio")
+        {
             // Construct batch endpoint from sanitized repo remote base.
             // For remotes like https://dev.azure.com/ORG/PROJECT/_git/REPO
             // the batch endpoint is at
@@ -168,10 +190,17 @@ fn download_lfs_object(sha: &str, dest: &Path, repo_remote: Option<&str>, size: 
             }
 
             let size_val = size.unwrap_or(0);
-            let req_body = BatchReq { operation: "download", objects: vec![BatchObj { oid: sha, size: size_val }] };
+            let req_body = BatchReq {
+                operation: "download",
+                objects: vec![BatchObj {
+                    oid: sha,
+                    size: size_val,
+                }],
+            };
 
             let client = reqwest::blocking::Client::new();
-            let mut req = client.post(&batch)
+            let mut req = client
+                .post(&batch)
                 .header("Accept", "application/vnd.git-lfs+json")
                 .header("Content-Type", "application/vnd.git-lfs+json")
                 .body(serde_json::to_vec(&req_body)?);
@@ -182,10 +211,14 @@ fn download_lfs_object(sha: &str, dest: &Path, repo_remote: Option<&str>, size: 
                 req = req.basic_auth("", Some(pat));
             }
 
-            let resp = req.send().with_context(|| format!("Failed to POST LFS batch to {}", batch))?;
+            let resp = req
+                .send()
+                .with_context(|| format!("Failed to POST LFS batch to {}", batch))?;
             // Capture status before consuming the response body.
             let status = resp.status();
-            let resp_bytes = resp.bytes().with_context(|| "Failed to read LFS batch response body")?;
+            let resp_bytes = resp
+                .bytes()
+                .with_context(|| "Failed to read LFS batch response body")?;
             if !status.is_success() {
                 let txt = String::from_utf8_lossy(&resp_bytes).to_string();
                 return Err(anyhow::anyhow!(
@@ -194,7 +227,8 @@ fn download_lfs_object(sha: &str, dest: &Path, repo_remote: Option<&str>, size: 
                     txt
                 ));
             }
-            let v: serde_json::Value = serde_json::from_slice(&resp_bytes).with_context(|| "Failed to parse LFS batch response JSON")?;
+            let v: serde_json::Value = serde_json::from_slice(&resp_bytes)
+                .with_context(|| "Failed to parse LFS batch response JSON")?;
             // Extract download href from response
             if let Some(obj) = v.get("objects").and_then(|o| o.get(0)) {
                 if let Some(actions) = obj.get("actions") {
@@ -213,9 +247,13 @@ fn download_lfs_object(sha: &str, dest: &Path, repo_remote: Option<&str>, size: 
                                     // of letters, digits and hyphen. Reject other
                                     // names to avoid "Invalid Header" responses
                                     // from some servers.
-                                    let is_safe = k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+                                    let is_safe =
+                                        k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
                                     if !is_safe {
-                                        log::warn!("Skipping unsafe header name from LFS action: {}", k);
+                                        log::warn!(
+                                            "Skipping unsafe header name from LFS action: {}",
+                                            k
+                                        );
                                         continue;
                                     }
                                     if let Some(val) = v.as_str() {
@@ -243,7 +281,11 @@ fn download_lfs_object(sha: &str, dest: &Path, repo_remote: Option<&str>, size: 
                             if let Some(hdrs) = download.get("header").and_then(|h| h.as_object()) {
                                 for (k, v) in hdrs.iter() {
                                     if let Some(val) = v.as_str() {
-                                        log::debug!("  {}: {}", k, &val[..std::cmp::min(80, val.len())]);
+                                        log::debug!(
+                                            "  {}: {}",
+                                            k,
+                                            &val[..std::cmp::min(80, val.len())]
+                                        );
                                     } else {
                                         log::debug!("  {}: <non-string>", k);
                                     }
@@ -261,24 +303,44 @@ fn download_lfs_object(sha: &str, dest: &Path, repo_remote: Option<&str>, size: 
                                     log::debug!("No AZURE_DEVOPS_PAT present to attach");
                                 }
                             } else {
-                                log::debug!("Authorization header provided by action; not attaching PAT");
+                                log::debug!(
+                                    "Authorization header provided by action; not attaching PAT"
+                                );
                             }
 
-                            let get_resp = get_req.send().with_context(|| format!("Failed to GET LFS object from {}", href))?;
+                            let get_resp = get_req.send().with_context(|| {
+                                format!("Failed to GET LFS object from {}", href)
+                            })?;
                             let get_status = get_resp.status();
                             if !get_status.is_success() {
                                 // Try to capture body text for diagnostics.
-                                let txt = get_resp.text().unwrap_or_else(|_| "<failed to read body>".to_string());
-                                return Err(anyhow::anyhow!("Failed to download LFS object {}: HTTP {}: {}", sha, get_status, txt));
+                                let txt = get_resp
+                                    .text()
+                                    .unwrap_or_else(|_| "<failed to read body>".to_string());
+                                return Err(anyhow::anyhow!(
+                                    "Failed to download LFS object {}: HTTP {}: {}",
+                                    sha,
+                                    get_status,
+                                    txt
+                                ));
                             }
-                            let bytes = get_resp.bytes().with_context(|| format!("Failed to read response body from {}", href))?;
-                            fs::write(dest, &bytes).with_context(|| format!("Failed to write downloaded LFS object to {}", dest.display()))?;
+                            let bytes = get_resp.bytes().with_context(|| {
+                                format!("Failed to read response body from {}", href)
+                            })?;
+                            fs::write(dest, &bytes).with_context(|| {
+                                format!(
+                                    "Failed to write downloaded LFS object to {}",
+                                    dest.display()
+                                )
+                            })?;
                             return Ok(());
                         }
                     }
                 }
             }
-            return Err(anyhow::anyhow!("LFS batch response did not include download action"));
+            return Err(anyhow::anyhow!(
+                "LFS batch response did not include download action"
+            ));
         }
     }
 
@@ -302,9 +364,9 @@ fn download_lfs_object(sha: &str, dest: &Path, repo_remote: Option<&str>, size: 
 pub fn sync_modpack(repo_path: &Path, target_path: &Path) -> Result<()> {
     let meta_path = repo_path.join("metadata.json");
     let _ = meta_path; // metadata.json is intentionally ignored; LFS is only served via Azure-style remotes
-    // Try to discover the repository's origin remote URL so we can use
-    // provider-specific LFS endpoints (for example Azure DevOps) when
-    // available.
+                       // Try to discover the repository's origin remote URL so we can use
+                       // provider-specific LFS endpoints (for example Azure DevOps) when
+                       // available.
     let repo_remote: Option<String> = (|| {
         if let Ok(repo) = git2_crate::Repository::open(repo_path) {
             if let Ok(remote) = repo.find_remote("origin") {
@@ -321,7 +383,11 @@ pub fn sync_modpack(repo_path: &Path, target_path: &Path) -> Result<()> {
         // copying repository internals into the target.  Also skip common
         // top-level git metadata files such as .gitattributes and
         // .gitignore — these are not needed in the downloaded modpack.
-        if entry.path().components().any(|c| c.as_os_str() == OsStr::new(".git")) {
+        if entry
+            .path()
+            .components()
+            .any(|c| c.as_os_str() == OsStr::new(".git"))
+        {
             continue;
         }
         // Skip top-level git metadata files (and any file starting with
@@ -349,7 +415,12 @@ pub fn sync_modpack(repo_path: &Path, target_path: &Path) -> Result<()> {
                 true
             };
             if needs_download {
-                download_lfs_object(&pointer.oid, &target_file_path, repo_remote.as_deref(), pointer.size)?;
+                download_lfs_object(
+                    &pointer.oid,
+                    &target_file_path,
+                    repo_remote.as_deref(),
+                    pointer.size,
+                )?;
             }
         } else {
             // Not a pointer: copy file directly if it differs.
@@ -394,7 +465,11 @@ pub fn validate_modpack(repo_path: &Path, target_path: &Path) -> Result<Vec<Path
         // Ignore .git internals and git metadata files when validating the
         // repo against the target; these are not part of the modpack
         // contents.
-        if entry.path().components().any(|c| c.as_os_str() == OsStr::new(".git")) {
+        if entry
+            .path()
+            .components()
+            .any(|c| c.as_os_str() == OsStr::new(".git"))
+        {
             continue;
         }
         if let Some(name) = entry.path().file_name().and_then(|s| s.to_str()) {
@@ -439,19 +514,21 @@ pub fn validate_modpack(repo_path: &Path, target_path: &Path) -> Result<Vec<Path
     Ok(mismatches)
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
     use std::thread;
     use tempfile::TempDir;
-    use tiny_http::{Server, Response};
+    use tiny_http::{Response, Server};
 
     #[test]
     fn download_lfs_object_http_roundtrip() {
         // Read the fixture data that the test server will serve.
-        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("test_blob.bin");
+        let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("test_blob.bin");
         let fixture_data = fs::read(&fixture_path).expect("read fixture");
 
         // Compute the SHA for the fixture using the library helper. We need
@@ -490,7 +567,11 @@ mod tests {
                             }
                         ]
                     });
-                    let header = tiny_http::Header::from_bytes(b"Content-Type", b"application/vnd.git-lfs+json").unwrap();
+                    let header = tiny_http::Header::from_bytes(
+                        b"Content-Type",
+                        b"application/vnd.git-lfs+json",
+                    )
+                    .unwrap();
                     let resp = Response::from_string(body.to_string()).with_header(header);
                     let _ = request.respond(resp);
                 } else if method == "GET" && url.starts_with("/download/") {
@@ -507,18 +588,24 @@ mod tests {
         let dest_dir = TempDir::new().expect("dest tempdir");
         let dest_path = dest_dir.path().join("downloaded.bin");
 
-    // Construct an Azure-style repo remote URL that points at our test
-    // server so the downloader will attempt a batch API call.
-    let repo_remote = format!("http://{}/visualstudio.com/my/repo", server_addr);
+        // Construct an Azure-style repo remote URL that points at our test
+        // server so the downloader will attempt a batch API call.
+        let repo_remote = format!("http://{}/visualstudio.com/my/repo", server_addr);
 
-    // Perform the download using the private function under test. Provide
-    // the simulated repo_remote and pointer size.
-    download_lfs_object(&fixture_sha, &dest_path, Some(&repo_remote), Some(fixture_data.len() as u64)).expect("download_lfs_object failed");
+        // Perform the download using the private function under test. Provide
+        // the simulated repo_remote and pointer size.
+        download_lfs_object(
+            &fixture_sha,
+            &dest_path,
+            Some(&repo_remote),
+            Some(fixture_data.len() as u64),
+        )
+        .expect("download_lfs_object failed");
 
         // Verify the downloaded file's SHA matches the fixture SHA.
         let downloaded_sha = compute_sha256(&dest_path).expect("compute downloaded sha");
         assert_eq!(downloaded_sha, fixture_sha, "downloaded blob sha mismatch");
 
-    // no-op
+        // no-op
     }
 }

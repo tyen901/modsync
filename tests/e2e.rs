@@ -1,17 +1,16 @@
 use std::fs::{self, File};
 use std::io::Write;
 
-use tempfile::TempDir;
 use std::path::Path;
 use std::thread;
-use tiny_http::{Server, Response};
+use tempfile::TempDir;
+use tiny_http::{Response, Server};
 
 /// End-to-end integration test that creates a temporary Git repository with
 /// an LFS pointer file and a normal file, then clones it and runs the
 /// `sync_modpack` and `validate_modpack` flows. This test runs by default.
 #[test]
 fn e2e_local_git_lfs_repo() {
-
     // Create a temporary directory to serve as the source repository.
     let src_dir = TempDir::new().expect("failed to create src tempdir");
     let src_path = src_dir.path();
@@ -34,7 +33,10 @@ fn e2e_local_git_lfs_repo() {
 
     // Compute SHA-256 of the deterministic fixture and write an LFS
     // pointer file referencing that SHA.
-    let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("test_blob.bin");
+    let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("test_blob.bin");
     let fixture_data = fs::read(&fixture_path).expect("read fixture");
 
     // To compute the SHA using the library helper we need a file on disk.
@@ -96,7 +98,9 @@ fn e2e_local_git_lfs_repo() {
     assert!(status.success(), "git clone failed");
 
     // Open the cloned repository using the library function.
-    let repo = modsync::gitutils::clone_or_open_repo(&clone_path.display().to_string(), &clone_path).expect("clone_or_open_repo failed");
+    let repo =
+        modsync::gitutils::clone_or_open_repo(&clone_path.display().to_string(), &clone_path)
+            .expect("clone_or_open_repo failed");
 
     // Write the LFS pointer into the cloned repository and commit it. Placing
     // the pointer in the clone avoids any transformations that might occur
@@ -164,7 +168,9 @@ fn e2e_local_git_lfs_repo() {
                         }
                     ]
                 });
-                let header = tiny_http::Header::from_bytes(b"Content-Type", b"application/vnd.git-lfs+json").unwrap();
+                let header =
+                    tiny_http::Header::from_bytes(b"Content-Type", b"application/vnd.git-lfs+json")
+                        .unwrap();
                 let resp = Response::from_string(body.to_string()).with_header(header);
                 let _ = request.respond(resp);
             } else if method == "GET" && url.starts_with("/download/") {
@@ -197,12 +203,18 @@ fn e2e_local_git_lfs_repo() {
 
     // Sanity check: ensure the downloaded blob has the expected SHA.
     let target_blob = target_dir.path().join("mods").join("example.pbo");
-    let downloaded_sha = modsync::modpack::compute_sha256(&target_blob).expect("compute downloaded sha");
+    let downloaded_sha =
+        modsync::modpack::compute_sha256(&target_blob).expect("compute downloaded sha");
     assert_eq!(downloaded_sha, fixture_sha, "downloaded blob sha mismatch");
 
-    let mismatches = modsync::modpack::validate_modpack(&clone_path, target_dir.path()).expect("validate_modpack failed");
+    let mismatches = modsync::modpack::validate_modpack(&clone_path, target_dir.path())
+        .expect("validate_modpack failed");
     // The hashes should match; expect zero mismatches.
-    assert!(mismatches.is_empty(), "expected zero mismatches, found {}", mismatches.len());
+    assert!(
+        mismatches.is_empty(),
+        "expected zero mismatches, found {}",
+        mismatches.len()
+    );
 
     // The HTTP server thread will exit when the process terminates; we
     // don't join it here to avoid blocking.
@@ -228,7 +240,9 @@ fn e2e_sync_regular_file() {
 
     // Create a normal file under mods/normal.txt
     let normal = src_path.join("mods").join("normal.txt");
-    if let Some(p) = normal.parent() { std::fs::create_dir_all(p).unwrap(); }
+    if let Some(p) = normal.parent() {
+        std::fs::create_dir_all(p).unwrap();
+    }
     let mut f = File::create(&normal).expect("create normal");
     writeln!(f, "hello world").unwrap();
 
@@ -268,7 +282,9 @@ fn e2e_sync_regular_file() {
         .expect("git clone failed");
     assert!(status.success());
 
-    let repo = modsync::gitutils::clone_or_open_repo(&clone_path.display().to_string(), &clone_path).expect("clone_or_open_repo failed");
+    let repo =
+        modsync::gitutils::clone_or_open_repo(&clone_path.display().to_string(), &clone_path)
+            .expect("clone_or_open_repo failed");
     let target_dir = TempDir::new().expect("target");
 
     modsync::gitutils::fetch(&repo).expect("fetch failed");
@@ -277,7 +293,8 @@ fn e2e_sync_regular_file() {
 
     let target_file = target_dir.path().join("mods").join("normal.txt");
     assert!(target_file.exists(), "expected normal file to be copied");
-    let mismatches = modsync::modpack::validate_modpack(&clone_path, target_dir.path()).expect("validate failed");
+    let mismatches = modsync::modpack::validate_modpack(&clone_path, target_dir.path())
+        .expect("validate failed");
     assert!(mismatches.is_empty(), "expected zero mismatches");
 }
 
@@ -301,7 +318,10 @@ fn e2e_repair_mismatch() {
     let mut meta_f = File::create(&meta).expect("failed to create metadata.json");
     writeln!(meta_f, "{{ \"address\": \"127.0.0.1\" }}").expect("write metadata");
 
-    let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("fixtures").join("test_blob.bin");
+    let fixture_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("test_blob.bin");
     let fixture_data = fs::read(&fixture_path).expect("read fixture");
     let tmp_blob = TempDir::new().expect("tmp for blob");
     let tmp_blob_path = tmp_blob.path().join("blob.bin");
@@ -346,7 +366,9 @@ fn e2e_repair_mismatch() {
 
     // Add pointer in clone pointing to fixture
     let cloned_pointer = clone_path.join("mods").join("example.pbo");
-    if let Some(parent) = cloned_pointer.parent() { fs::create_dir_all(parent).unwrap(); }
+    if let Some(parent) = cloned_pointer.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
     let mut p_f = File::create(&cloned_pointer).expect("failed to create pointer in clone");
     writeln!(p_f, "version https://git-lfs.github.com/spec/v1").unwrap();
     writeln!(p_f, "oid sha256:{}", fixture_sha).unwrap();
@@ -376,7 +398,9 @@ fn e2e_repair_mismatch() {
     // Create a target directory that already contains a corrupted file
     let target_dir = TempDir::new().expect("target");
     let target_blob = target_dir.path().join("mods").join("example.pbo");
-    if let Some(p) = target_blob.parent() { fs::create_dir_all(p).unwrap(); }
+    if let Some(p) = target_blob.parent() {
+        fs::create_dir_all(p).unwrap();
+    }
     fs::write(&target_blob, b"corrupted data").expect("write corrupted");
 
     // Start HTTP server to serve the real blob
@@ -407,7 +431,9 @@ fn e2e_repair_mismatch() {
                         }
                     ]
                 });
-                let header = tiny_http::Header::from_bytes(b"Content-Type", b"application/vnd.git-lfs+json").unwrap();
+                let header =
+                    tiny_http::Header::from_bytes(b"Content-Type", b"application/vnd.git-lfs+json")
+                        .unwrap();
                 let resp = Response::from_string(body.to_string()).with_header(header);
                 let _ = request.respond(resp);
             } else if method == "GET" && url.starts_with("/download/") {
@@ -420,7 +446,9 @@ fn e2e_repair_mismatch() {
         }
     });
 
-    let repo = modsync::gitutils::clone_or_open_repo(&clone_path.display().to_string(), &clone_path).expect("clone_or_open_repo failed");
+    let repo =
+        modsync::gitutils::clone_or_open_repo(&clone_path.display().to_string(), &clone_path)
+            .expect("clone_or_open_repo failed");
     modsync::gitutils::fetch(&repo).expect("fetch failed");
 
     // Update cloned repo origin to point at Azure-style server
@@ -439,11 +467,16 @@ fn e2e_repair_mismatch() {
     modsync::modpack::sync_modpack(&clone_path, target_dir.path()).expect("sync failed");
 
     // Verify repaired: the corrupted file should now match fixture
-    let downloaded_sha = modsync::modpack::compute_sha256(&target_blob).expect("compute downloaded sha");
+    let downloaded_sha =
+        modsync::modpack::compute_sha256(&target_blob).expect("compute downloaded sha");
     assert_eq!(downloaded_sha, fixture_sha, "repaired blob sha mismatch");
 
-    let mismatches = modsync::modpack::validate_modpack(&clone_path, target_dir.path()).expect("validate failed");
-    assert!(mismatches.is_empty(), "expected zero mismatches after repair");
+    let mismatches = modsync::modpack::validate_modpack(&clone_path, target_dir.path())
+        .expect("validate failed");
+    assert!(
+        mismatches.is_empty(),
+        "expected zero mismatches after repair"
+    );
     // no-op: env var not used
 }
 
@@ -502,14 +535,18 @@ fn e2e_detect_update_available() {
         .expect("git clone failed");
     assert!(status.success());
 
-    let repo = modsync::gitutils::clone_or_open_repo(&clone_path.display().to_string(), &clone_path).expect("clone_or_open_repo failed");
+    let repo =
+        modsync::gitutils::clone_or_open_repo(&clone_path.display().to_string(), &clone_path)
+            .expect("clone_or_open_repo failed");
 
     // Record before
     let before = modsync::gitutils::head_oid(&repo).ok();
 
     // Create a new commit in the source repo to simulate an update
     let newfile = src_path.join("mods").join("new.txt");
-    if let Some(p) = newfile.parent() { fs::create_dir_all(p).unwrap(); }
+    if let Some(p) = newfile.parent() {
+        fs::create_dir_all(p).unwrap();
+    }
     fs::write(&newfile, b"updated").expect("write new");
     let status = std::process::Command::new("git")
         .arg("-C")
@@ -536,6 +573,12 @@ fn e2e_detect_update_available() {
     // Fetch into clone and check head_oid changed
     modsync::gitutils::fetch(&repo).expect("fetch failed");
     let after = modsync::gitutils::head_oid(&repo).ok();
-    assert!(before.is_some() && after.is_some(), "could not determine before/after oids");
-    assert!(before.unwrap() != after.unwrap(), "expected update to change head oid");
+    assert!(
+        before.is_some() && after.is_some(),
+        "could not determine before/after oids"
+    );
+    assert!(
+        before.unwrap() != after.unwrap(),
+        "expected update to change head oid"
+    );
 }
