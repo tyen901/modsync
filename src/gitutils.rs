@@ -164,9 +164,7 @@ pub fn fetch(repo: &Repository) -> Result<()> {
 }
 
 /// Returns the object ID (SHA‑1) of the current HEAD in the repository.
-/// This can be used to detect whether the remote repository has changed
-/// since the last sync.  If the repository is in a detached HEAD state
-/// the pointed object is returned.
+/// If the repository is in a detached HEAD state the pointed object is returned.
 pub fn head_oid(repo: &Repository) -> Result<Oid> {
     // Prefer a remote tracking reference if present (this makes it possible
     // to detect upstream changes after a fetch).  We try a few common

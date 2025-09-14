@@ -119,17 +119,18 @@ wish to override.
 
 ### LFS downloading behaviour
 
-The built‑in downloader has two modes:
+The downloader implements a single strategy: it uses the Git LFS batch
+API exposed by Azure DevOps / VisualStudio-style remotes. When the
+repository's origin remote indicates an Azure/VisualStudio host the
+application will POST to `.../info/lfs/objects/batch` to obtain a
+download action and then fetch the object bytes from the returned
+href. Authentication can be supplied via the repository provider (for
+example a Personal Access Token) when required.
 
-- If the `LFS_SERVER_URL` environment variable is set, `modsync` will make
-   an HTTP GET request to `{LFS_SERVER_URL}/{sha}` to obtain the object
-   bytes. This mode is primarily used by the test harness but can be used
-   to point at a simple object server.
-
-- If `LFS_SERVER_URL` is not set the downloader falls back to creating an
-   empty placeholder file at the destination path. Replace or extend the
-   downloader to perform `git lfs fetch` or integrate with your hosting
-   provider for production use.
+There is no environment-variable-based fallback. If your hosting
+provider exposes a different LFS API (for example GitHub or GitLab) you
+should implement a provider-specific downloader that calls the
+appropriate endpoints.
 
 ## Detecting and launching Arma 3
 
@@ -198,14 +199,15 @@ cargo test
 ```
 
 There is a unit test that runs a tiny HTTP server and verifies the HTTP
-downloader round‑trip when `LFS_SERVER_URL` is set. The test uses the
-fixture at `tests/fixtures/test_blob.bin`.
+downloader round‑trip by simulating the Git LFS batch API. The test uses
+the fixture at `tests/fixtures/test_blob.bin`.
 
 ## Notes and development
 
-- LFS: to make the tool download real objects, either set `LFS_SERVER_URL`
-   to a server that serves blobs by SHA, or implement a downloader that
-   integrates with `git lfs` or your hosting provider's API.
+-- LFS: to make the tool download real objects, implement a downloader
+   that integrates with your hosting provider's LFS API (the project
+   currently implements Azure/VisualStudio batch API support). Replace
+   or extend the downloader to support other providers if required.
 - The repository operations rely on the `git2` crate. The tool clones if
    necessary and uses `fetch` (it does not automatically merge or checkout
    remote branches into the working tree).

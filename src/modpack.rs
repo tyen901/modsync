@@ -117,22 +117,12 @@ pub fn compute_sha256(path: &Path) -> Result<String> {
 /// The default implementation is a stub – in a real application you could
 /// call `git lfs fetch` or use the GitHub/GitLab LFS API.  This function
 /// creates the destination directory if it does not exist.
-fn download_lfs_object(sha: &str, dest: &Path, lfs_server: Option<&str>, repo_remote: Option<&str>, size: Option<u64>) -> Result<()> {
+fn download_lfs_object(sha: &str, dest: &Path, repo_remote: Option<&str>, size: Option<u64>) -> Result<()> {
     // Ensure the parent directory exists so that we can write into it.
     if let Some(parent) = dest.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Failed to create directory {}", parent.display()))?;
     }
-
-    // If an LFS server URL is provided via environment or via the
-    // provider metadata, attempt to fetch the object from there. The
-    // test harness can set `LFS_SERVER_URL` to point to a local HTTP
-    // server which serves blobs named by SHA. Prefer an explicitly
-    // provided LFS server (for example the provider may include one in
-    // metadata.json).  Fall back to environment when not provided.
-    let server_owned: Option<String> = lfs_server
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("LFS_SERVER_URL").ok());
 
     // Helper to remove userinfo from URLs (e.g., user@host) which can
     // produce invalid Host headers for some servers.
@@ -148,23 +138,17 @@ fn download_lfs_object(sha: &str, dest: &Path, lfs_server: Option<&str>, repo_re
         u.to_string()
     }
 
-    if let Some(server) = server_owned.as_deref() {
-        let url = format!("{}/{}", strip_userinfo(server).trim_end_matches('/'), sha);
-        let resp = reqwest::blocking::get(&url).with_context(|| format!("Failed to GET {}", url))?;
-        if !resp.status().is_success() {
-            return Err(anyhow::anyhow!("Failed to download LFS object {}: HTTP {}", sha, resp.status()));
-        }
-        let bytes = resp.bytes().with_context(|| format!("Failed to read response body from {}", url))?;
-        fs::write(dest, &bytes).with_context(|| format!("Failed to write downloaded LFS object to {}", dest.display()))?;
-        return Ok(());
-    }
+    // This implementation only supports downloading LFS objects via
+    // the Git LFS batch API exposed by Azure DevOps / VisualStudio
+    // style remotes. If the repository remote does not indicate an
+    // Azure/VisualStudio host this function will return an error.
 
     // If the remote looks like Azure DevOps, use the Git LFS batch API to
     // request a download action (this avoids relying on system git lfs).
     if let Some(remote) = repo_remote {
         let sanitized = strip_userinfo(remote);
         let lower = sanitized.to_ascii_lowercase();
-        if lower.contains("dev.azure.com") || lower.contains("visualstudio.com") {
+        if lower.contains("dev.azure.com") || lower.contains("visualstudio.com") || lower.contains("azure") || lower.contains("visualstudio") {
             // Construct batch endpoint from sanitized repo remote base.
             // For remotes like https://dev.azure.com/ORG/PROJECT/_git/REPO
             // the batch endpoint is at
@@ -316,21 +300,8 @@ fn download_lfs_object(sha: &str, dest: &Path, lfs_server: Option<&str>, repo_re
 /// populate the destination.  Non‑pointer files are copied directly to the
 /// target if they differ.
 pub fn sync_modpack(repo_path: &Path, target_path: &Path) -> Result<()> {
-    // Attempt to read metadata.json in the repository root to discover a
-    // provider-supplied LFS server URL.  If present the server will be
-    // preferred over the environment variable.
     let meta_path = repo_path.join("metadata.json");
-    let provider_lfs: Option<String> = if meta_path.exists() {
-        match fs::read_to_string(&meta_path) {
-            Ok(c) => match serde_json::from_str::<serde_json::Value>(&c) {
-                Ok(v) => v.get("lfs_server_url").and_then(|j| j.as_str().map(|s| s.to_string())),
-                Err(_) => None,
-            },
-            Err(_) => None,
-        }
-    } else {
-        None
-    };
+    let _ = meta_path; // metadata.json is intentionally ignored; LFS is only served via Azure-style remotes
     // Try to discover the repository's origin remote URL so we can use
     // provider-specific LFS endpoints (for example Azure DevOps) when
     // available.
@@ -378,8 +349,7 @@ pub fn sync_modpack(repo_path: &Path, target_path: &Path) -> Result<()> {
                 true
             };
             if needs_download {
-                let server_opt = provider_lfs.as_deref();
-                download_lfs_object(&pointer.oid, &target_file_path, server_opt, repo_remote.as_deref(), pointer.size)?;
+                download_lfs_object(&pointer.oid, &target_file_path, repo_remote.as_deref(), pointer.size)?;
             }
         } else {
             // Not a pointer: copy file directly if it differs.
@@ -492,39 +462,63 @@ mod tests {
         let fixture_sha = compute_sha256(&tmp_blob_path).expect("compute sha");
 
         // Start a tiny HTTP server bound to an ephemeral port and serve the
-        // fixture bytes for any incoming request.
+        // batch API and blob endpoints used by Azure-style remotes.
         let server = Server::http("127.0.0.1:0").expect("failed to start test server");
         let server_addr = server.server_addr();
         let server_url = format!("http://{}", server_addr);
         let fixture_for_thread = fixture_data.clone();
+        let fixture_sha_clone = fixture_sha.clone();
         thread::spawn(move || {
             for request in server.incoming_requests() {
-                let res = Response::from_data(fixture_for_thread.clone());
-                let _ = request.respond(res);
+                let url = request.url().to_string();
+                let method = request.method().as_str().to_string();
+                if method == "POST" && url.ends_with("/info/lfs/objects/batch") {
+                    let download_url = format!("{}/download/{}", server_url, fixture_sha_clone);
+                    let body = serde_json::json!({
+                        "objects": [
+                            {
+                                "oid": fixture_sha_clone,
+                                "size": fixture_for_thread.len(),
+                                "actions": {
+                                    "download": {
+                                        "href": download_url,
+                                        "header": {
+                                            "Accept": "application/octet-stream"
+                                        }
+                                    }
+                                }
+                            }
+                        ]
+                    });
+                    let header = tiny_http::Header::from_bytes(b"Content-Type", b"application/vnd.git-lfs+json").unwrap();
+                    let resp = Response::from_string(body.to_string()).with_header(header);
+                    let _ = request.respond(resp);
+                } else if method == "GET" && url.starts_with("/download/") {
+                    let res = Response::from_data(fixture_for_thread.clone());
+                    let _ = request.respond(res);
+                } else {
+                    let resp = Response::from_string("not found").with_status_code(404);
+                    let _ = request.respond(resp);
+                }
             }
         });
-
-
-    // Point the downloader at our test server.
-    std::env::set_var("LFS_SERVER_URL", &server_url);
 
         // Destination file for the download.
         let dest_dir = TempDir::new().expect("dest tempdir");
         let dest_path = dest_dir.path().join("downloaded.bin");
 
-    // Perform the download using the private function under test. Pass
-    // the server URL explicitly (download_lfs_object will prefer the
-    // provided value over the environment variable when given).
-    let server = std::env::var("LFS_SERVER_URL").ok();
-    // No repository remote in this unit test; pass None for repo_remote and
-    // size.
-    download_lfs_object(&fixture_sha, &dest_path, server.as_deref(), None, None).expect("download_lfs_object failed");
+    // Construct an Azure-style repo remote URL that points at our test
+    // server so the downloader will attempt a batch API call.
+    let repo_remote = format!("http://{}/visualstudio.com/my/repo", server_addr);
+
+    // Perform the download using the private function under test. Provide
+    // the simulated repo_remote and pointer size.
+    download_lfs_object(&fixture_sha, &dest_path, Some(&repo_remote), Some(fixture_data.len() as u64)).expect("download_lfs_object failed");
 
         // Verify the downloaded file's SHA matches the fixture SHA.
         let downloaded_sha = compute_sha256(&dest_path).expect("compute downloaded sha");
         assert_eq!(downloaded_sha, fixture_sha, "downloaded blob sha mismatch");
 
-        // Clean up env var.
-        std::env::remove_var("LFS_SERVER_URL");
+    // no-op
     }
 }

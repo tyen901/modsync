@@ -26,11 +26,6 @@ pub struct Metadata {
     pub port: u16,
     /// Optional password required to connect to the server.
     pub password: Option<String>,
-    /// Optional LFS server URL provided by the modpack provider.  When
-    /// present this will be used by the synchronisation code to fetch
-    /// large file objects by SHA.
-    #[serde(default)]
-    pub lfs_server_url: Option<String>,
 }
 
 impl Metadata {

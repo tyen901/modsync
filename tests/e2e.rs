@@ -133,11 +133,10 @@ fn e2e_local_git_lfs_repo() {
         .expect("git commit in clone failed");
     assert!(status.success());
 
-    // Start a tiny HTTP server that will serve the real blob at /{sha}.
-    // The server runs in a background thread and will be shut down when
-    // the test exits. We set LFS_SERVER_URL so `download_lfs_object`
-    // will fetch from it.
+    // Start a tiny HTTP server that will implement the Git LFS batch API
+    // and serve the real blob at /download/{sha}.
     let fixture_clone = fixture_data.clone();
+    let fixture_sha_clone = fixture_sha.clone();
     let server = Server::http("127.0.0.1:0").expect("failed to start test server");
     let server_addr = server.server_addr();
     let server_url = format!("http://{}", server_addr);
@@ -145,18 +144,55 @@ fn e2e_local_git_lfs_repo() {
     // Spawn server thread
     let _handle = thread::spawn(move || {
         for request in server.incoming_requests() {
-            // Always serve the fixture for any request in this test.
-            let body = Response::from_data(fixture_clone.clone());
-            let _ = request.respond(body);
+            let url = request.url().to_string();
+            let method = request.method().as_str().to_string();
+            if method == "POST" && url.ends_with("/info/lfs/objects/batch") {
+                let download_url = format!("{}/download/{}", server_url, fixture_sha_clone);
+                let body = serde_json::json!({
+                    "objects": [
+                        {
+                            "oid": fixture_sha_clone,
+                            "size": fixture_clone.len(),
+                            "actions": {
+                                "download": {
+                                    "href": download_url,
+                                    "header": {
+                                        "Accept": "application/octet-stream"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                });
+                let header = tiny_http::Header::from_bytes(b"Content-Type", b"application/vnd.git-lfs+json").unwrap();
+                let resp = Response::from_string(body.to_string()).with_header(header);
+                let _ = request.respond(resp);
+            } else if method == "GET" && url.starts_with("/download/") {
+                let body = Response::from_data(fixture_clone.clone());
+                let _ = request.respond(body);
+            } else {
+                let resp = Response::from_string("not found").with_status_code(404);
+                let _ = request.respond(resp);
+            }
         }
     });
 
-    // Export server URL so the modpack downloader uses it.
-    std::env::set_var("LFS_SERVER_URL", &server_url);
-
-    // Fetch and run sync. The sync will download the real blob from our test
-    // server into the target directory.
     modsync::gitutils::fetch(&repo).expect("fetch failed");
+
+    // Adjust the cloned repository's origin remote to point at our
+    // simulated Azure server so the downloader will use the batch API.
+    let azure_origin = format!("http://{}/visualstudio.com/my/repo", server_addr);
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&clone_path)
+        .arg("remote")
+        .arg("set-url")
+        .arg("origin")
+        .arg(&azure_origin)
+        .status()
+        .expect("git remote set-url failed");
+    assert!(status.success());
+
     modsync::modpack::sync_modpack(&clone_path, target_dir.path()).expect("sync_modpack failed");
 
     // Sanity check: ensure the downloaded blob has the expected SHA.
@@ -168,9 +204,8 @@ fn e2e_local_git_lfs_repo() {
     // The hashes should match; expect zero mismatches.
     assert!(mismatches.is_empty(), "expected zero mismatches, found {}", mismatches.len());
 
-    // Clean up: remove env var. The HTTP server thread will exit when the
-    // process terminates; we don't join it here to avoid blocking.
-    std::env::remove_var("LFS_SERVER_URL");
+    // The HTTP server thread will exit when the process terminates; we
+    // don't join it here to avoid blocking.
 }
 
 // Ensure that regular (non-LFS) files are copied into the target when
@@ -237,6 +272,7 @@ fn e2e_sync_regular_file() {
     let target_dir = TempDir::new().expect("target");
 
     modsync::gitutils::fetch(&repo).expect("fetch failed");
+
     modsync::modpack::sync_modpack(&clone_path, target_dir.path()).expect("sync_modpack failed");
 
     let target_file = target_dir.path().join("mods").join("normal.txt");
@@ -345,19 +381,61 @@ fn e2e_repair_mismatch() {
 
     // Start HTTP server to serve the real blob
     let fixture_clone = fixture_data.clone();
+    let fixture_sha_clone = fixture_sha.clone();
     let server = Server::http("127.0.0.1:0").expect("failed to start test server");
     let server_addr = server.server_addr();
     let server_url = format!("http://{}", server_addr);
     let _handle = thread::spawn(move || {
         for request in server.incoming_requests() {
-            let body = Response::from_data(fixture_clone.clone());
-            let _ = request.respond(body);
+            let url = request.url().to_string();
+            let method = request.method().as_str().to_string();
+            if method == "POST" && url.ends_with("/info/lfs/objects/batch") {
+                let download_url = format!("{}/download/{}", server_url, fixture_sha_clone);
+                let body = serde_json::json!({
+                    "objects": [
+                        {
+                            "oid": fixture_sha_clone,
+                            "size": fixture_clone.len(),
+                            "actions": {
+                                "download": {
+                                    "href": download_url,
+                                    "header": {
+                                        "Accept": "application/octet-stream"
+                                    }
+                                }
+                            }
+                        }
+                    ]
+                });
+                let header = tiny_http::Header::from_bytes(b"Content-Type", b"application/vnd.git-lfs+json").unwrap();
+                let resp = Response::from_string(body.to_string()).with_header(header);
+                let _ = request.respond(resp);
+            } else if method == "GET" && url.starts_with("/download/") {
+                let body = Response::from_data(fixture_clone.clone());
+                let _ = request.respond(body);
+            } else {
+                let resp = Response::from_string("not found").with_status_code(404);
+                let _ = request.respond(resp);
+            }
         }
     });
-    std::env::set_var("LFS_SERVER_URL", &server_url);
 
     let repo = modsync::gitutils::clone_or_open_repo(&clone_path.display().to_string(), &clone_path).expect("clone_or_open_repo failed");
     modsync::gitutils::fetch(&repo).expect("fetch failed");
+
+    // Update cloned repo origin to point at Azure-style server
+    let azure_origin = format!("http://{}/visualstudio.com/my/repo", server_addr);
+    let status = std::process::Command::new("git")
+        .arg("-C")
+        .arg(&clone_path)
+        .arg("remote")
+        .arg("set-url")
+        .arg("origin")
+        .arg(&azure_origin)
+        .status()
+        .expect("git remote set-url failed");
+    assert!(status.success());
+
     modsync::modpack::sync_modpack(&clone_path, target_dir.path()).expect("sync failed");
 
     // Verify repaired: the corrupted file should now match fixture
@@ -366,7 +444,7 @@ fn e2e_repair_mismatch() {
 
     let mismatches = modsync::modpack::validate_modpack(&clone_path, target_dir.path()).expect("validate failed");
     assert!(mismatches.is_empty(), "expected zero mismatches after repair");
-    std::env::remove_var("LFS_SERVER_URL");
+    // no-op: env var not used
 }
 
 // Ensure update detection: if the remote HEAD changes after fetch the
