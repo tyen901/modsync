@@ -26,6 +26,7 @@ use ratatui::{
     Terminal,
 };
 use std::io::{self, Stdout};
+use std::time::Duration;
 use tokio::task;
 
 /// Representation of the application state for the UI.
@@ -146,7 +147,6 @@ impl App {
                     };
                     let config_lines = vec![
                         format!("Repo URL: {}", self.config.repo_url),
-                        format!("Local repo: {}", self.config.repo_cache_path().display()),
                         format!("Target mods: {}", self.config.target_mod_dir.display()),
                         format!("Arma exe: {}", arma_path),
                     ];
@@ -166,46 +166,55 @@ impl App {
                 })
                 .context("Failed to draw UI")?;
 
-            // Handle input events.  We don't use a timeout here so the
-            // application will block until an event is available.  For a
-            // responsive UI you could poll with a timeout instead.
-            match event::read().context("Failed to read terminal event")? {
-                Event::Key(key) => {
-                    // On some platforms/crossterm versions key events are emitted
-                    // for both press and release. Only handle "Press" and
-                    // repeated key events to avoid processing the same logical
-                    // keypress twice.
-                    match key.kind {
-                        KeyEventKind::Press | KeyEventKind::Repeat => match key.code {
-                            KeyCode::Up => {
-                                if self.selected > 0 {
-                                    self.selected -= 1;
+            // Handle input events. Use a short poll timeout so the loop can
+            // periodically wake to drain logs from background tasks and
+            // redraw the UI even when the user doesn't interact with it.
+            // A small timeout (100ms) gives good responsiveness without
+            // burning CPU.
+            let timeout = Duration::from_millis(100);
+            if event::poll(timeout).context("Failed to poll terminal event")? {
+                match event::read().context("Failed to read terminal event")? {
+                    Event::Key(key) => {
+                        // On some platforms/crossterm versions key events are emitted
+                        // for both press and release. Only handle "Press" and
+                        // repeated key events to avoid processing the same logical
+                        // keypress twice.
+                        match key.kind {
+                            KeyEventKind::Press | KeyEventKind::Repeat => match key.code {
+                                KeyCode::Up => {
+                                    if self.selected > 0 {
+                                        self.selected -= 1;
+                                    }
                                 }
-                            }
-                            KeyCode::Down => {
-                                if self.selected + 1 < self.menu.len() {
-                                    self.selected += 1;
+                                KeyCode::Down => {
+                                    if self.selected + 1 < self.menu.len() {
+                                        self.selected += 1;
+                                    }
                                 }
+                                KeyCode::Enter => {
+                                    // Clone self.selected to avoid borrow issues in async closure.
+                                    let idx = self.selected;
+                                    self.execute_menu(idx).await?;
+                                }
+                                KeyCode::Char('q') => {
+                                    break;
+                                }
+                                _ => {}
+                            },
+                            _ => {
+                                // Ignore KeyEventKind::Release and other kinds.
                             }
-                            KeyCode::Enter => {
-                                // Clone self.selected to avoid borrow issues in async closure.
-                                let idx = self.selected;
-                                self.execute_menu(idx).await?;
-                            }
-                            KeyCode::Char('q') => {
-                                break;
-                            }
-                            _ => {}
-                        },
-                        _ => {
-                            // Ignore KeyEventKind::Release and other kinds.
                         }
                     }
+                    Event::Resize(_, _) => {
+                        // A resize triggers a redraw on the next iteration.
+                    }
+                    _ => {}
                 }
-                Event::Resize(_, _) => {
-                    // A resize triggers a redraw on the next iteration.
-                }
-                _ => {}
+            } else {
+                // No input event within the timeout; loop will continue and
+                // redraw/drainthe log channel. This is expected and keeps the
+                // UI responsive to background messages.
             }
         }
         Ok(())
@@ -220,6 +229,11 @@ impl App {
                 let config = self.config.clone();
                 let log_tx = self.log_tx.clone();
                 task::spawn_blocking(move || {
+                    // Ensure any previous repo URL mismatch clears the cache.
+                    if let Err(e) = config.ensure_repo_cache_for_url() {
+                        let _ = log_tx.send(format!("Failed to ensure repo cache: {e}"));
+                    }
+
                     let repo_path = config.repo_cache_path();
                     match gitutils::clone_or_open_repo(&config.repo_url, &repo_path) {
                         Ok(repo) => {
@@ -275,6 +289,11 @@ impl App {
                 let config = self.config.clone();
                 let log_tx = self.log_tx.clone();
                 task::spawn_blocking(move || {
+                    // Ensure the repo cache is valid for the configured URL.
+                    if let Err(e) = config.ensure_repo_cache_for_url() {
+                        let _ = log_tx.send(format!("Failed to ensure repo cache: {e}"));
+                    }
+
                     let repo_path = config.repo_cache_path();
                     match gitutils::clone_or_open_repo(&config.repo_url, &repo_path) {
                         Ok(repo) => {
