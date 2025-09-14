@@ -69,6 +69,34 @@ pub fn clone_or_open_repo(url: &str, path: &Path) -> Result<Repository> {
 
                 if let Some(existing_url) = existing_url_opt {
                     if existing_url != url {
+                        // If the caller passed the local path as the "url" (for
+                        // example tests that clone using the system git CLI and
+                        // then call this helper with the clone path), treat that
+                        // as a match and return the opened repository instead of
+                        // removing it. Try to canonicalize the provided URL and
+                        // the path to detect equivalence for local paths.
+                        let url_is_same_as_path = (|| {
+                            // First, if the provided url string exactly equals the
+                            // path display use that as a quick check.
+                            if url == path.display().to_string() {
+                                return true;
+                            }
+                            // Try to interpret the URL as a local filesystem
+                            // path and canonicalize both sides for comparison. If
+                            // any step fails, fall back to conservative false.
+                            if let Ok(url_path) = std::path::PathBuf::from(url).canonicalize() {
+                                if let Ok(cpath) = path.canonicalize() {
+                                    return url_path == cpath;
+                                }
+                            }
+                            false
+                        })();
+
+                        if url_is_same_as_path {
+                            // Treat as matching repo; return it.
+                            return Ok(repo);
+                        }
+
                         // Remote URL changed — remove cache to avoid surprises.
                         std::fs::remove_dir_all(path).with_context(|| {
                             format!(
