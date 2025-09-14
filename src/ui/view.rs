@@ -10,7 +10,7 @@
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Wrap},
     Frame,
 };
 
@@ -71,58 +71,148 @@ pub fn render(f: &mut Frame, app: &App) {
             lines.push(format!(" {} {}", status_str, stage));
         }
 
-        // If there are files to show (download phase), render per-file progress below stages.
-        if !task.files.is_empty() {
-            lines.push(String::new());
-            lines.push("Files to download:".to_string());
-            for f in task.files.iter() {
-                let total_str = match f.total {
-                    Some(t) => format!("{}/{} bytes", f.bytes_received, t),
-                    None => format!("{} bytes", f.bytes_received),
+        // If there are files to show (download phase), render per-file progress
+        // below stages. Only show active files (i.e. currently downloading), do
+        // not show pending files. We will render either a single paragraph
+        // (when no active files) or a vertical layout with stages, overall
+        // gauge and per-file gauges when there are active downloads.
+        let active_files: Vec<_> = task
+            .files
+            .iter()
+            .filter(|f| {
+                // Active = not completed and either we've received bytes or the
+                // transfer has started.
+                !f.completed && (f.bytes_received > 0 || f.started_at.is_some())
+            })
+            .collect();
+        if active_files.is_empty() {
+            // No active files: render the compact stages + file list as a single Paragraph
+            let text = lines.join("\n");
+            let widget = Paragraph::new(text)
+                .block(
+                    Block::default()
+                        .title("Task Progress")
+                        .borders(Borders::ALL),
+                )
+                .wrap(Wrap { trim: true });
+            f.render_widget(widget, right);
+        } else {
+            // Build a vertical split: top = stages, middle = overall gauge, bottom = active files area.
+            // Compute a reasonable stage height (header + stages). Let the layout manage wrapping.
+            let stage_height = (1 + task.stages.len()) as u16 + 1; // header + stages + spacer
+            let vchunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Length(stage_height), Constraint::Length(3), Constraint::Min(0)].as_ref())
+                .split(right);
+
+            // Stages in top chunk
+            let mut stage_lines = vec![format!("Task: {}", task.name)];
+            for (i, stage) in task.stages.iter().enumerate() {
+                let status_str: String = match &task.stage_statuses[i] {
+                    super::state::TaskStageStatus::Pending => "[ ]".to_string(),
+                    super::state::TaskStageStatus::InProgress => "[~]".to_string(),
+                    super::state::TaskStageStatus::Done => "[x]".to_string(),
+                    super::state::TaskStageStatus::Failed(msg) => format!("[!] {}", msg),
                 };
-                // Small helper to format bytes/sec into human readable form.
-                fn fmt_bps(b: u64) -> String {
+                stage_lines.push(format!(" {} {}", status_str, stage));
+            }
+            let stage_text = stage_lines.join("\n");
+            let stage_widget = Paragraph::new(stage_text)
+                .block(Block::default().title("Task Progress").borders(Borders::ALL))
+                .wrap(Wrap { trim: true });
+            f.render_widget(stage_widget, vchunks[0]);
+
+            // Compute overall progress and render in middle chunk (vchunks[1])
+            let files_total = task.files.len();
+            let files_done = task.files.iter().filter(|ff| ff.completed).count();
+            let bytes_total_opt: Option<u64> = task
+                .files
+                .iter()
+                .map(|ff| ff.total)
+                .fold(Some(0u64), |acc, v| match (acc, v) {
+                    (Some(a), Some(b)) => Some(a.saturating_add(b)),
+                    _ => None,
+                });
+            let bytes_done: u64 = task.files.iter().map(|ff| ff.bytes_received).sum();
+            let overall_ratio = if let Some(total) = bytes_total_opt {
+                if total == 0 { 0.0 } else { (bytes_done as f64 / total as f64).clamp(0.0, 1.0) }
+            } else {
+                if files_total == 0 { 0.0 } else { (files_done as f64 / files_total as f64).clamp(0.0, 1.0) }
+            };
+            let speed_suffix = task
+                .overall_instant_bps
+                .map(|bps| {
                     const KB: f64 = 1024.0;
                     const MB: f64 = KB * 1024.0;
-                    let b_f = b as f64;
+                    let b_f = bps as f64;
                     if b_f >= MB {
-                        format!("{:.2} MiB/s", b_f / MB)
+                        format!(" ({:.2} MiB/s)", b_f / MB)
                     } else if b_f >= KB {
-                        format!("{:.1} KiB/s", b_f / KB)
+                        format!(" ({:.1} KiB/s)", b_f / KB)
                     } else {
-                        format!("{} B/s", b)
+                        format!(" ({} B/s)", bps)
                     }
-                }
+                })
+                .unwrap_or_default();
+            let overall_label = if let Some(total) = bytes_total_opt {
+                format!("Overall: {}/{} bytes{}", bytes_done, total, speed_suffix)
+            } else {
+                format!("Overall: {}/{} files{}", files_done, files_total, speed_suffix)
+            };
+            let overall_gauge = Gauge::default()
+                .block(Block::default().title("Overall Progress").borders(Borders::ALL))
+                .gauge_style(Style::default().fg(Color::Green).bg(Color::Black).add_modifier(Modifier::BOLD))
+                .ratio(overall_ratio)
+                .label(overall_label);
+            f.render_widget(overall_gauge, vchunks[1]);
 
-                let status = if f.completed {
-                    match f.elapsed {
-                        Some(dur) => format!("done ({:.1}s)", dur.as_secs_f64()),
-                        None => "done".to_string(),
-                    }
-                } else if let Some(err) = &f.error {
-                    format!("err: {}", err)
-                } else if f.bytes_received == 0 {
-                    "pending".to_string()
+            // Bottom chunk for active files: render a compact single-line list
+            // of files (filename, short oid, progress / bytes, speed). Using a
+            // single List avoids complex nested layouts per file which were
+            // causing the overall layout to break when many files are present.
+            let bottom = vchunks[2];
+            // Build list items up to the available height.
+            let avail_lines = bottom.height.saturating_sub(2) as usize; // leave room for borders/title
+            let mut items: Vec<ListItem> = Vec::new();
+            for fpr in active_files.iter().take(avail_lines.max(1)) {
+                let fname = fpr
+                    .dest
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| fpr.dest.display().to_string());
+                let short_oid = if fpr.oid.len() > 8 { &fpr.oid[..8] } else { &fpr.oid };
+                let progress_str = if let Some(total) = fpr.total {
+                    let pct = if total == 0 { 0.0 } else { (fpr.bytes_received as f64 / total as f64) * 100.0 };
+                    format!("{:.1}% ({}/{})", pct, fpr.bytes_received, total)
                 } else {
-                    match f.instant_bps {
-                        Some(bps) => fmt_bps(bps),
-                        None => "downloading".to_string(),
-                    }
+                    format!("{} bytes", fpr.bytes_received)
                 };
-                let short_oid = if f.oid.len() > 8 { &f.oid[..8] } else { &f.oid };
-                lines.push(format!(" {} {} — {}", short_oid, total_str, status));
+                let speed_str = match fpr.instant_bps {
+                    Some(bps) => {
+                        const KB: f64 = 1024.0;
+                        const MB: f64 = KB * 1024.0;
+                        let b_f = bps as f64;
+                        if b_f >= MB {
+                            format!("{:.2} MiB/s", b_f / MB)
+                        } else if b_f >= KB {
+                            format!("{:.1} KiB/s", b_f / KB)
+                        } else {
+                            format!("{} B/s", bps)
+                        }
+                    }
+                    None => String::new(),
+                };
+                let line = if speed_str.is_empty() {
+                    format!("{} ({}) — {}", fname, short_oid, progress_str)
+                } else {
+                    format!("{} ({}) — {} — {}", fname, short_oid, progress_str, speed_str)
+                };
+                items.push(ListItem::new(line));
             }
+            let list = List::new(items).block(Block::default().title("Active files").borders(Borders::ALL));
+            f.render_widget(list, bottom);
         }
-
-        let text = lines.join("\n");
-        let widget = Paragraph::new(text)
-            .block(
-                Block::default()
-                    .title("Task Progress")
-                    .borders(Borders::ALL),
-            )
-            .wrap(Wrap { trim: true });
-        f.render_widget(widget, right);
     } else {
         // Idle view: display configuration and current modpack state.
         let arma_path = match &app.config.arma_executable {

@@ -36,12 +36,21 @@ impl SlidingWindow {
         if self.samples.is_empty() {
             return 0;
         }
-        let secs = self.window.as_secs_f64();
-        if secs == 0.0 {
-            return 0;
+        // Compute elapsed time between oldest and newest sample for a more
+        // accurate instantaneous bandwidth measurement. If the elapsed time
+        // is extremely small fall back to the configured window length.
+        let first_time = self.samples.front().unwrap().0;
+        let last_time = self.samples.back().unwrap().0;
+        let mut elapsed = last_time.duration_since(first_time).as_secs_f64();
+        if elapsed <= 0.0 {
+            elapsed = self.window.as_secs_f64();
         }
         let total: u64 = self.samples.iter().map(|&(_, b)| b).sum();
-        (total as f64 / secs).round() as u64
+        if elapsed == 0.0 {
+            0
+        } else {
+            (total as f64 / elapsed).round() as u64
+        }
     }
 }
 
@@ -171,6 +180,25 @@ pub fn start_download_job(
         let agg_completed_bytes = completed_bytes.clone();
         let agg_worker_count = worker_count.clone();
         let agg_interval = Duration::from_millis(cfg.progress_interval_ms.max(100));
+        // Capture known total bytes from the items vector
+        let known_bytes_total: Option<u64> = {
+            let mut acc: Option<u64> = Some(0);
+            for it in &items {
+                match it.size {
+                    Some(s) => {
+                        if let Some(a) = acc {
+                            acc = Some(a.saturating_add(s));
+                        }
+                    }
+                    None => {
+                        acc = None;
+                        break;
+                    }
+                }
+            }
+            acc
+        };
+
         let aggregator = thread::spawn(move || {
             while agg_worker_count.load(Ordering::SeqCst) > 0 {
                 thread::sleep(agg_interval);
@@ -184,7 +212,7 @@ pub fn start_download_job(
                 let _ = agg_tx.send(ProgressEvent::Aggregate {
                     files_total,
                     files_done,
-                    bytes_total: None,
+                    bytes_total: known_bytes_total,
                     bytes_done,
                     instant_bps,
                 });
@@ -200,7 +228,7 @@ pub fn start_download_job(
             let _ = agg_tx.send(ProgressEvent::Aggregate {
                 files_total,
                 files_done,
-                bytes_total: None,
+                bytes_total: known_bytes_total,
                 bytes_done,
                 instant_bps,
             });

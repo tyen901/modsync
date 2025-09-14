@@ -124,8 +124,8 @@ impl App {
                                 f.completed = false;
                             }
                         }
-                        ProgressEvent::Aggregate { .. } => {
-                            // ignore here; view may render aggregate info
+                        ProgressEvent::Aggregate { instant_bps, .. } => {
+                            t.overall_instant_bps = Some(instant_bps);
                         }
                     }
                 }
@@ -177,6 +177,8 @@ pub struct TaskState {
     pub stage_statuses: Vec<TaskStageStatus>,
     /// Optional per-file download progress tracked during the sync stage.
     pub files: Vec<FileProgress>,
+    /// Current aggregate instantaneous bytes/sec across all active files.
+    pub overall_instant_bps: Option<u64>,
 }
 
 impl TaskState {
@@ -188,6 +190,7 @@ impl TaskState {
             current_stage: 0,
             stage_statuses: vec![TaskStageStatus::Pending; len],
             files: Vec::new(),
+            overall_instant_bps: None,
         }
     }
 }

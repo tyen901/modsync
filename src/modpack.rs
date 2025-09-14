@@ -457,6 +457,67 @@ pub fn sync_modpack(repo_path: &Path, target_path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Scans the repository and returns the list of LFS objects that need to
+/// be downloaded (oid, optional size, destination path and repo remote).
+pub fn collect_download_items(
+    repo_path: &Path,
+    target_path: &Path,
+) -> Result<Vec<crate::downloader::LfsDownloadItem>> {
+    let repo_remote: Option<String> = (|| {
+        if let Ok(repo) = git2_crate::Repository::open(repo_path) {
+            if let Ok(remote) = repo.find_remote("origin") {
+                if let Some(url) = remote.url() {
+                    return Some(url.to_string());
+                }
+            }
+        }
+        None
+    })();
+
+    let mut items = Vec::new();
+    for entry in WalkDir::new(repo_path).into_iter().filter_map(|e| e.ok()) {
+        if entry
+            .path()
+            .components()
+            .any(|c| c.as_os_str() == OsStr::new(".git"))
+        {
+            continue;
+        }
+        if let Some(name) = entry.path().file_name().and_then(|s| s.to_str()) {
+            if name == ".gitattributes" || name == ".gitignore" || name.starts_with(".git") {
+                continue;
+            }
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let repo_file_path = entry.path();
+        let rel_path = repo_file_path
+            .strip_prefix(repo_path)
+            .unwrap_or(repo_file_path);
+        let target_file_path = target_path.join(rel_path);
+
+        if let Some(pointer) = parse_lfs_pointer_file(repo_file_path)? {
+            // This is an LFS pointer.  Compare with existing file.
+            let needs_download = if target_file_path.exists() {
+                let existing_sha = compute_sha256(&target_file_path)?;
+                existing_sha != pointer.oid
+            } else {
+                true
+            };
+            if needs_download {
+                items.push(crate::downloader::LfsDownloadItem {
+                    oid: pointer.oid,
+                    size: pointer.size,
+                    dest: target_file_path,
+                    repo_remote: repo_remote.clone(),
+                });
+            }
+        }
+    }
+    Ok(items)
+}
+
 /// Validates the local mod directory against the repository.  Returns a
 /// vector of relative paths that are missing or have mismatching hashes.
 pub fn validate_modpack(repo_path: &Path, target_path: &Path) -> Result<Vec<PathBuf>> {
