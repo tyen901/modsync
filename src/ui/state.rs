@@ -151,6 +151,10 @@ impl App {
                 self.modpack_state = state_lines;
                 self.current_task = None;
             }
+                    TaskUpdate::SetModpackState(state_lines) => {
+                        // Replace the modpack state without clearing the current task.
+                        self.modpack_state = state_lines;
+                    }
             TaskUpdate::Aborted => {
                 self.current_task = None;
             }
@@ -219,6 +223,8 @@ pub enum TaskUpdate {
     Finished(Vec<String>),
     /// Provide the list of files that will be downloaded (oid, size, dest)
     SetDownloadList(Vec<(String, Option<u64>, std::path::PathBuf)>),
+    /// Replace the lightweight modpack status shown when no task is running.
+    SetModpackState(Vec<String>),
     /// Forwarded downloader progress events for per-file updates.
     DownloaderEvent(crate::downloader::ProgressEvent),
     Aborted,

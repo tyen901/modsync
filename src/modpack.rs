@@ -37,15 +37,24 @@ pub struct LfsPointer {
 
 pub fn parse_lfs_pointer_file(path: &Path) -> Result<Option<LfsPointer>> {
     // Read raw bytes so that pointer parsing is robust even when the file
-    // contains non-UTF-8 content (which would cause `lines()` to fail).
+    // contains non-UTF-8 content. We'll perform ASCII-lowercasing on a
+    // copy of the bytes to allow case-insensitive searches while still
+    // extracting the original byte slices for values.
     let data = fs::read(path)
         .with_context(|| format!("Failed to open potential pointer file {}", path.display()))?;
 
-    // Ensure this file contains the version prefix somewhere.  Git or other
-    // tools may insert leading bytes (BOMs, CRLF conversions) so search for
-    // the marker anywhere in the file instead of insisting on it at byte 0.
+    // Create a lowercase view of the data for case-insensitive matching of
+    // ASCII keywords. Non-ASCII bytes are left unchanged.
+    let mut lower = data.clone();
+    for byte in &mut lower {
+        if *byte >= b'A' && *byte <= b'Z' {
+            *byte = byte.to_ascii_lowercase();
+        }
+    }
+
+    // Ensure file contains the version prefix somewhere (case-insensitive).
     let version_prefix = b"version https://git-lfs.github.com/spec/";
-    if data
+    if lower
         .windows(version_prefix.len())
         .position(|w| w == version_prefix)
         .is_none()
@@ -53,37 +62,36 @@ pub fn parse_lfs_pointer_file(path: &Path) -> Result<Option<LfsPointer>> {
         return Ok(None);
     }
 
-    // Search for the oid sha256 line anywhere in the file.
+    // Search for the "oid sha256:" marker in the lowercase view.
     let needle = b"oid sha256:";
     let mut found_oid: Option<String> = None;
-    if let Some(pos) = data.windows(needle.len()).position(|w| w == needle) {
+    if let Some(pos) = lower.windows(needle.len()).position(|w| w == needle) {
         let hex_start = pos + needle.len();
-        // collect hex bytes until whitespace or newline
         let mut hex_end = hex_start;
-        while hex_end < data.len() {
-            let c = data[hex_end];
+        while hex_end < lower.len() {
+            let c = lower[hex_end];
             if c.is_ascii_whitespace() {
                 break;
             }
             hex_end += 1;
         }
         let hex_bytes = &data[hex_start..hex_end];
-        // Convert using lossy UTF-8 in case of weird bytes; hex should be ASCII.
-        let hex_str = String::from_utf8_lossy(hex_bytes).trim().to_string();
-        found_oid = Some(hex_str);
+        // Hex should be ASCII; normalize to lowercase so comparisons are
+        // case-insensitive.
+        let hex_str = String::from_utf8_lossy(hex_bytes).trim().to_ascii_lowercase();
+        if !hex_str.is_empty() {
+            found_oid = Some(hex_str);
+        }
     }
 
-    // Try to parse size line if present.
+    // Try to parse size line if present (case-insensitive search for "size ").
     let size_needle = b"size ";
     let mut found_size: Option<u64> = None;
-    if let Some(pos) = data
-        .windows(size_needle.len())
-        .position(|w| w == size_needle)
-    {
+    if let Some(pos) = lower.windows(size_needle.len()).position(|w| w == size_needle) {
         let num_start = pos + size_needle.len();
         let mut num_end = num_start;
-        while num_end < data.len() {
-            let c = data[num_end];
+        while num_end < lower.len() {
+            let c = lower[num_end];
             if c == b'\n' || c == b'\r' || c.is_ascii_whitespace() {
                 break;
             }
@@ -100,12 +108,79 @@ pub fn parse_lfs_pointer_file(path: &Path) -> Result<Option<LfsPointer>> {
     }
 
     if let Some(oid) = found_oid {
-        return Ok(Some(LfsPointer {
-            oid,
-            size: found_size,
-        }));
+        return Ok(Some(LfsPointer { oid, size: found_size }));
     }
     Ok(None)
+}
+
+/// Copies all non-pointer files from `repo_path` into `target_path`.
+/// This mirrors the previous Phase 1 logic but is exposed so callers
+/// (for example the UI) can invoke it independently.
+pub fn copy_non_pointer_files(repo_path: &Path, target_path: &Path) -> Result<()> {
+    for entry in WalkDir::new(repo_path).into_iter().filter_map(|e| e.ok()) {
+        if entry
+            .path()
+            .components()
+            .any(|c| c.as_os_str() == OsStr::new(".git"))
+        {
+            continue;
+        }
+        if let Some(name) = entry.path().file_name().and_then(|s| s.to_str()) {
+            if name == ".gitattributes" || name == ".gitignore" || name.starts_with(".git") {
+                continue;
+            }
+        }
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        let repo_file_path = entry.path();
+        // If this is an LFS pointer, skip in phase 1.  If pointer parsing
+        // fails for any reason treat the file as a normal file and continue
+        // copying it; don't abort the entire sync for a single malformed
+        // file.
+        match parse_lfs_pointer_file(repo_file_path) {
+            Ok(Some(_)) => continue,
+            Ok(None) => {}
+            Err(e) => {
+                log::warn!(
+                    "Failed to parse potential LFS pointer {}: {}. Treating as regular file.",
+                    repo_file_path.display(),
+                    e
+                );
+            }
+        }
+        let rel_path = repo_file_path
+            .strip_prefix(repo_path)
+            .unwrap_or(repo_file_path);
+        let target_file_path = target_path.join(rel_path);
+
+        let should_copy = if target_file_path.exists() {
+            let src_meta = fs::metadata(repo_file_path)?;
+            let dst_meta = fs::metadata(&target_file_path)?;
+            if src_meta.len() != dst_meta.len() {
+                true
+            } else {
+                let src_sha = compute_sha256(repo_file_path)?;
+                let dst_sha = compute_sha256(&target_file_path)?;
+                src_sha != dst_sha
+            }
+        } else {
+            true
+        };
+        if should_copy {
+            if let Some(parent) = target_file_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(repo_file_path, &target_file_path).with_context(|| {
+                format!(
+                    "Failed to copy file from {} to {}",
+                    repo_file_path.display(),
+                    target_file_path.display()
+                )
+            })?;
+        }
+    }
+    Ok(())
 }
 
 /// Computes the SHA‑256 of the file at the given path and returns it as a
@@ -136,12 +211,6 @@ fn download_lfs_object(
     repo_remote: Option<&str>,
     size: Option<u64>,
 ) -> Result<()> {
-    // Ensure the parent directory exists so that we can write into it.
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create directory {}", parent.display()))?;
-    }
-
     // Helper to remove userinfo from URLs (e.g., user@host) which can
     // produce invalid Host headers for some servers.
     fn strip_userinfo(u: &str) -> String {
@@ -157,12 +226,10 @@ fn download_lfs_object(
     }
 
     // This implementation only supports downloading LFS objects via
-    // the Git LFS batch API exposed by Azure DevOps / VisualStudio
-    // style remotes. If the repository remote does not indicate an
-    // Azure/VisualStudio host this function will return an error.
+    // the Git LFS batch API exposed by Azure DevOps / VisualStudio style
+    // remotes. For any other remote (or when repo_remote is None) we return
+    // an error rather than creating a placeholder file.
 
-    // If the remote looks like Azure DevOps, use the Git LFS batch API to
-    // request a download action (this avoids relying on system git lfs).
     if let Some(remote) = repo_remote {
         let sanitized = strip_userinfo(remote);
         let lower = sanitized.to_ascii_lowercase();
@@ -172,9 +239,6 @@ fn download_lfs_object(
             || lower.contains("visualstudio")
         {
             // Construct batch endpoint from sanitized repo remote base.
-            // For remotes like https://dev.azure.com/ORG/PROJECT/_git/REPO
-            // the batch endpoint is at
-            // https://dev.azure.com/ORG/PROJECT/_git/REPO/info/lfs/objects/batch
             let batch = format!("{}/info/lfs/objects/batch", sanitized.trim_end_matches('/'));
 
             // Prepare batch request
@@ -192,10 +256,7 @@ fn download_lfs_object(
             let size_val = size.unwrap_or(0);
             let req_body = BatchReq {
                 operation: "download",
-                objects: vec![BatchObj {
-                    oid: sha,
-                    size: size_val,
-                }],
+                objects: vec![BatchObj { oid: sha, size: size_val }],
             };
 
             let client = reqwest::blocking::Client::new();
@@ -235,18 +296,11 @@ fn download_lfs_object(
                     if let Some(download) = actions.get("download") {
                         if let Some(href) = download.get("href").and_then(|h| h.as_str()) {
                             // Optional headers
-                            // Sanitize href to remove any userinfo (user@) before
-                            // issuing the GET request — some servers reject
-                            // requests where the Host header contains userinfo.
                             let sanitized_href = strip_userinfo(href);
                             let mut get_req = client.get(&sanitized_href);
                             let mut auth_header_present = false;
                             if let Some(hdrs) = download.get("header").and_then(|h| h.as_object()) {
                                 for (k, v) in hdrs.iter() {
-                                    // Only accept simple ASCII header names consisting
-                                    // of letters, digits and hyphen. Reject other
-                                    // names to avoid "Invalid Header" responses
-                                    // from some servers.
                                     let is_safe =
                                         k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
                                     if !is_safe {
@@ -266,46 +320,13 @@ fn download_lfs_object(
                                     }
                                 }
                             }
-                            // Debug: show what we're about to request.
-                            log::debug!("LFS download href: {}", href);
-                            log::debug!("Sanitized LFS download href: {}", sanitized_href);
-                            // Show host for clarity
-                            if let Ok(url) = reqwest::Url::parse(&sanitized_href) {
-                                if let Some(host) = url.host_str() {
-                                    log::debug!("LFS download host: {}", host);
-                                }
-                            }
-                            log::debug!("Headers to send:");
-                            // We can't inspect get_req headers directly; instead
-                            // echo the header map we parsed from the batch action.
-                            if let Some(hdrs) = download.get("header").and_then(|h| h.as_object()) {
-                                for (k, v) in hdrs.iter() {
-                                    if let Some(val) = v.as_str() {
-                                        log::debug!(
-                                            "  {}: {}",
-                                            k,
-                                            &val[..std::cmp::min(80, val.len())]
-                                        );
-                                    } else {
-                                        log::debug!("  {}: <non-string>", k);
-                                    }
-                                }
-                            } else {
-                                log::debug!("  <no headers from action>");
-                            }
+
                             // If the download action did not provide an Authorization
                             // header, attach the AZURE_DEVOPS_PAT as basic auth.
                             if !auth_header_present {
                                 if let Ok(pat) = std::env::var("AZURE_DEVOPS_PAT") {
-                                    log::debug!("Attaching AZURE_DEVOPS_PAT as basic auth for GET");
                                     get_req = get_req.basic_auth("", Some(pat));
-                                } else {
-                                    log::debug!("No AZURE_DEVOPS_PAT present to attach");
                                 }
-                            } else {
-                                log::debug!(
-                                    "Authorization header provided by action; not attaching PAT"
-                                );
                             }
 
                             let get_resp = get_req.send().with_context(|| {
@@ -313,7 +334,6 @@ fn download_lfs_object(
                             })?;
                             let get_status = get_resp.status();
                             if !get_status.is_success() {
-                                // Try to capture body text for diagnostics.
                                 let txt = get_resp
                                     .text()
                                     .unwrap_or_else(|_| "<failed to read body>".to_string());
@@ -327,6 +347,14 @@ fn download_lfs_object(
                             let bytes = get_resp.bytes().with_context(|| {
                                 format!("Failed to read response body from {}", href)
                             })?;
+
+                            // Ensure the parent directory exists so that we can write into it.
+                            if let Some(parent) = dest.parent() {
+                                fs::create_dir_all(parent).with_context(|| {
+                                    format!("Failed to create directory {}", parent.display())
+                                })?;
+                            }
+
                             fs::write(dest, &bytes).with_context(|| {
                                 format!(
                                     "Failed to write downloaded LFS object to {}",
@@ -344,14 +372,11 @@ fn download_lfs_object(
         }
     }
 
-    // Fallback stub: create an empty placeholder file.
-    fs::write(dest, b"").with_context(|| {
-        format!(
-            "Failed to create placeholder for LFS object {}",
-            dest.display()
-        )
-    })?;
-    Ok(())
+    // If we reach here the remote is not supported by this downloader.
+    Err(anyhow::anyhow!(
+        "Unsupported or missing remote for LFS download: {:?}",
+        repo_remote
+    ))
 }
 
 /// Synchronises the contents of the repository at `repo_path` with the
@@ -367,93 +392,19 @@ pub fn sync_modpack(repo_path: &Path, target_path: &Path) -> Result<()> {
                        // Try to discover the repository's origin remote URL so we can use
                        // provider-specific LFS endpoints (for example Azure DevOps) when
                        // available.
-    let repo_remote: Option<String> = (|| {
-        if let Ok(repo) = git2_crate::Repository::open(repo_path) {
-            if let Ok(remote) = repo.find_remote("origin") {
-                if let Some(url) = remote.url() {
-                    return Some(url.to_string());
-                }
-            }
-        }
-        None
-    })();
+    // repo_remote is not required here; `collect_download_items` will
+    // determine the remote for each pointer and downloads are performed
+    // using the per-item repo_remote value.
 
-    for entry in WalkDir::new(repo_path).into_iter().filter_map(|e| e.ok()) {
-        // Skip directories and any files under a .git directory to avoid
-        // copying repository internals into the target.  Also skip common
-        // top-level git metadata files such as .gitattributes and
-        // .gitignore — these are not needed in the downloaded modpack.
-        if entry
-            .path()
-            .components()
-            .any(|c| c.as_os_str() == OsStr::new(".git"))
-        {
-            continue;
-        }
-        // Skip top-level git metadata files (and any file starting with
-        // ".git" to be conservative).
-        if let Some(name) = entry.path().file_name().and_then(|s| s.to_str()) {
-            if name == ".gitattributes" || name == ".gitignore" || name.starts_with(".git") {
-                continue;
-            }
-        }
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let repo_file_path = entry.path();
-        let rel_path = repo_file_path
-            .strip_prefix(repo_path)
-            .unwrap_or(repo_file_path);
-        let target_file_path = target_path.join(rel_path);
+    // Phase 1: copy all non-pointer files into the target.
+    copy_non_pointer_files(repo_path, target_path)?;
 
-        if let Some(pointer) = parse_lfs_pointer_file(repo_file_path)? {
-            // This is an LFS pointer.  Compare with existing file.
-            let needs_download = if target_file_path.exists() {
-                let existing_sha = compute_sha256(&target_file_path)?;
-                existing_sha != pointer.oid
-            } else {
-                true
-            };
-            if needs_download {
-                download_lfs_object(
-                    &pointer.oid,
-                    &target_file_path,
-                    repo_remote.as_deref(),
-                    pointer.size,
-                )?;
-            }
-        } else {
-            // Not a pointer: copy file directly if it differs.
-            let should_copy = if target_file_path.exists() {
-                // Compare bytes only if sizes match; otherwise copy.
-                let src_meta = fs::metadata(repo_file_path)?;
-                let dst_meta = fs::metadata(&target_file_path)?;
-                if src_meta.len() != dst_meta.len() {
-                    true
-                } else {
-                    // Compute hashes for small files.  If files are large this
-                    // may be expensive; consider using modification times.
-                    let src_sha = compute_sha256(repo_file_path)?;
-                    let dst_sha = compute_sha256(&target_file_path)?;
-                    src_sha != dst_sha
-                }
-            } else {
-                true
-            };
-            if should_copy {
-                if let Some(parent) = target_file_path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::copy(repo_file_path, &target_file_path).with_context(|| {
-                    format!(
-                        "Failed to copy file from {} to {}",
-                        repo_file_path.display(),
-                        target_file_path.display()
-                    )
-                })?;
-            }
-        }
+    // Phase 2: collect and download LFS objects for pointer files.
+    let items = collect_download_items(repo_path, target_path)?;
+    for item in items {
+        download_lfs_object(&item.oid, &item.dest, item.repo_remote.as_deref(), item.size)?;
     }
+
     Ok(())
 }
 
@@ -497,21 +448,33 @@ pub fn collect_download_items(
             .unwrap_or(repo_file_path);
         let target_file_path = target_path.join(rel_path);
 
-        if let Some(pointer) = parse_lfs_pointer_file(repo_file_path)? {
-            // This is an LFS pointer.  Compare with existing file.
-            let needs_download = if target_file_path.exists() {
-                let existing_sha = compute_sha256(&target_file_path)?;
-                existing_sha != pointer.oid
-            } else {
-                true
-            };
-            if needs_download {
-                items.push(crate::downloader::LfsDownloadItem {
-                    oid: pointer.oid,
-                    size: pointer.size,
-                    dest: target_file_path,
-                    repo_remote: repo_remote.clone(),
-                });
+        match parse_lfs_pointer_file(repo_file_path) {
+            Ok(Some(pointer)) => {
+                // This is an LFS pointer.  Compare with existing file.
+                let needs_download = if target_file_path.exists() {
+                    let existing_sha = compute_sha256(&target_file_path)?;
+                    existing_sha != pointer.oid
+                } else {
+                    true
+                };
+                if needs_download {
+                    items.push(crate::downloader::LfsDownloadItem {
+                        oid: pointer.oid,
+                        size: pointer.size,
+                        dest: target_file_path,
+                        repo_remote: repo_remote.clone(),
+                    });
+                }
+            }
+            Ok(None) => {
+                // Not a pointer; nothing to collect.
+            }
+            Err(e) => {
+                log::warn!(
+                    "Failed to parse potential LFS pointer {}: {}. Skipping download collection for this file.",
+                    repo_file_path.display(),
+                    e
+                );
             }
         }
     }

@@ -17,7 +17,7 @@ fn spawn_job_and_channel(
         // Best-effort: ignore send failures (test may have stopped receiving).
         let _ = tx.send(ev);
     };
-    let control_tx = modsync::ui::attach_downloader_consumer(items, cfg, on_event);
+    let (control_tx, _supervisor) = modsync::ui::attach_downloader_consumer(items, cfg, on_event);
     (control_tx, rx)
 }
 

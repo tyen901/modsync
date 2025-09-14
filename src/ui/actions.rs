@@ -51,8 +51,33 @@ pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
                     Ok(repo) => {
                         let _ = gitutils::fetch(&repo);
                         let _ = task_tx.send(TaskUpdate::StageCompleted(1));
-                        // Stage 2: determine downloads and perform them with the downloader
+                        // Stage 2: ensure non-pointer files are copied first,
+                        // then run validation to populate the UI with current
+                        // modpack state and determine downloads.
                         let _ = task_tx.send(TaskUpdate::StageStarted(2));
+                        // Copy non-pointer files into target first.
+                        if let Err(e) = modpack::copy_non_pointer_files(&repo_path, &config.target_mod_dir) {
+                            let _ = task_tx.send(TaskUpdate::StageFailed(2, format!("Failed to copy files: {}", e)));
+                            let _ = task_tx.send(TaskUpdate::Aborted);
+                            return;
+                        }
+
+                        // Run validation and report lightweight state to UI.
+                        match modpack::validate_modpack(&repo_path, &config.target_mod_dir) {
+                            Ok(mismatches) => {
+                                let mut state_lines = Vec::new();
+                                if mismatches.is_empty() {
+                                    state_lines.push("Sync: OK (no mismatches)".to_string());
+                                } else {
+                                    state_lines.push(format!("{} mismatch(es)", mismatches.len()));
+                                }
+                                let _ = task_tx.send(TaskUpdate::SetModpackState(state_lines));
+                            }
+                            Err(e) => {
+                                let _ = task_tx.send(TaskUpdate::SetModpackState(vec![format!("Validation error: {}", e)]));
+                            }
+                        }
+
                         match modpack::collect_download_items(&repo_path, &config.target_mod_dir) {
                             Ok(items) => {
                                 // Inform UI of the planned downloads (oid, size, dest)
