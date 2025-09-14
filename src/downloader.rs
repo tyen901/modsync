@@ -218,7 +218,7 @@ pub fn start_download_job(
                         }
                     }
 
-                    let this_chunk = cmp::min(chunk as u64, remaining);
+                    let this_chunk = cmp::min(chunk, remaining);
                     thread::sleep(Duration::from_millis(sleep_ms / 2));
                     window.add(this_chunk);
                     received += this_chunk;
@@ -254,8 +254,9 @@ pub fn start_download_job(
                     let _ = fh.sync_all();
                 }
                 if let Err(e) = std::fs::rename(&part_path, &item.dest) {
-                    if let Err(_) = std::fs::copy(&part_path, &item.dest)
+                    if std::fs::copy(&part_path, &item.dest)
                         .and_then(|_| std::fs::remove_file(&part_path))
+                        .is_err()
                     {
                         let _ = progress_tx.send(ProgressEvent::Failed {
                             oid: item.oid.clone(),
@@ -294,8 +295,8 @@ pub async fn execute_plan(
 ) -> Result<Summary, anyhow::Error> {
     use anyhow::Context;
     use hex;
-    use sha1::{Digest as Sha1Digest, Sha1};
-    use sha2::{Digest as Sha2Digest, Sha256};
+    use sha1::{Digest as _, Sha1};
+    use sha2::Sha256;
     use tokio::fs;
     use tokio::io::AsyncWriteExt;
 
@@ -407,7 +408,7 @@ pub async fn execute_plan(
             }
             let mut hasher = Sha256::new();
             hasher.update(&bytes);
-            let got = hex::encode(hasher.finalize());
+            let got = hex::encode(<Sha256 as sha2::Digest>::finalize(hasher));
             if got != oid {
                 return Err(anyhow::anyhow!(
                     "lfs oid mismatch for oid {}: expected {}, got {}",

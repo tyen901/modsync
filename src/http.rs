@@ -13,11 +13,12 @@ pub struct AzureClient {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Item {
-    pub objectId: Option<String>,
-    pub gitObjectType: Option<String>,
+    pub object_id: Option<String>,
+    pub git_object_type: Option<String>,
     pub path: Option<String>,
-    pub isFolder: Option<bool>,
+    pub is_folder: Option<bool>,
     pub url: Option<String>,
     pub size: Option<u64>,
     pub content: Option<String>,
@@ -88,7 +89,7 @@ impl AzureClient {
         let req = self.client.get(&url);
         // If a token is provided we do not assume a specific auth scheme here.
         // For public repos token is usually not required. Callers may extend this.
-        if let Some(_) = &self.token {
+        if self.token.is_some() {
             // Intentionally not adding auth header by default to keep behaviour simple.
         }
         let resp = req.send().await?;
@@ -114,7 +115,7 @@ impl AzureClient {
             oid = oid
         );
         let req = self.client.get(&url);
-        if let Some(_) = &self.token {
+        if self.token.is_some() {
             // no-op for now
         }
         let resp = req.send().await?;
@@ -140,7 +141,7 @@ impl AzureClient {
             .header("Accept", "application/vnd.git-lfs+json")
             .header("Content-Type", "application/vnd.git-lfs+json")
             .json(&req_body);
-        if let Some(_) = &self.token {
+        if self.token.is_some() {
             // no-op
         }
         let resp = req.send().await?;

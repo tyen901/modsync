@@ -54,10 +54,9 @@ pub fn parse_lfs_pointer_file(path: &Path) -> Result<Option<LfsPointer>> {
 
     // Ensure file contains the version prefix somewhere (case-insensitive).
     let version_prefix = b"version https://git-lfs.github.com/spec/";
-    if lower
+    if !lower
         .windows(version_prefix.len())
-        .position(|w| w == version_prefix)
-        .is_none()
+        .any(|w| w == version_prefix)
     {
         return Ok(None);
     }

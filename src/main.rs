@@ -35,18 +35,22 @@ async fn main() -> Result<()> {
     let mut remote_index = index::Index::new();
     let pointer_prefix = b"version https://git-lfs.github.com/spec/";
     for item in items_resp.value.into_iter() {
-        if item.isFolder.unwrap_or(false) {
+        if item.is_folder.unwrap_or(false) {
             continue;
         }
         let path = match item.path {
             Some(p) => {
                 // strip leading slash if present
-                let p = if p.starts_with('/') { &p[1..] } else { &p };
+                let p = if let Some(stripped) = p.strip_prefix('/') {
+                    stripped
+                } else {
+                    p.as_str()
+                };
                 std::path::PathBuf::from(p)
             }
             None => continue,
         };
-        if let Some(object_id) = item.objectId {
+        if let Some(object_id) = item.object_id {
             // If the blob looks small, fetch content to detect LFS pointer
             let size = item.size.unwrap_or(0);
             if size > 0 && size < 4096 {
@@ -57,10 +61,10 @@ async fn main() -> Result<()> {
                         let mut oid_sha: Option<String> = None;
                         let mut sz: Option<u64> = None;
                         for line in s.lines() {
-                            if line.starts_with("oid sha256:") {
-                                oid_sha = Some(line["oid sha256:".len()..].trim().to_string());
-                            } else if line.starts_with("size ") {
-                                if let Ok(v) = line["size ".len()..].trim().parse::<u64>() {
+                            if let Some(stripped) = line.strip_prefix("oid sha256:") {
+                                oid_sha = Some(stripped.trim().to_string());
+                            } else if let Some(stripped) = line.strip_prefix("size ") {
+                                if let Ok(v) = stripped.trim().parse::<u64>() {
                                     sz = Some(v);
                                 }
                             }
