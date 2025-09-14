@@ -1,0 +1,16 @@
+{
+  // Hide the build output folder from the explorer and searches
+  "files.exclude": {
+    "target/": true
+  },
+
+  "search.exclude": {
+    "target/": true
+  },
+
+  // Tell GitHub Copilot to ignore the target folder (workspace-relative globs)
+  "github.copilot.ignoredPaths": [
+    "target/**",
+    "**/target/**"
+  ]
+}
