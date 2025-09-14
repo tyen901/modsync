@@ -73,7 +73,11 @@ impl AzureClient {
 
     /// List items for a given path at a specific commit. This calls the Azure
     /// Items API with recursionLevel=Full.
-    pub async fn list_items_commit(&self, path: &str, commit: &str) -> Result<ItemsResponse, Error> {
+    pub async fn list_items_commit(
+        &self,
+        path: &str,
+        commit: &str,
+    ) -> Result<ItemsResponse, Error> {
         let base = self.base_url.as_str().trim_end_matches('/');
         let url = format!(
             "{base}/items?path={path}&recursionLevel=Full&includeContentMetadata=true&versionDescriptor.version={commit}&versionDescriptor.versionType=commit&api-version=7.1",

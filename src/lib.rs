@@ -7,5 +7,7 @@ pub mod modpack;
 pub mod downloader;
 
 pub use config::Config;
-pub use downloader::{ControlCommand, DownloaderConfig, LfsDownloadItem, ProgressEvent, Summary, start_download_job};
+pub use downloader::{
+    start_download_job, ControlCommand, DownloaderConfig, LfsDownloadItem, ProgressEvent, Summary,
+};
 pub use index::SyncPlan;

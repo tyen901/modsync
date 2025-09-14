@@ -25,7 +25,7 @@ pub struct SyncPlan {
     /// stored relative to the indexed root.
     pub blobs: Vec<(PathBuf, BlobEntry)>, // (path, entry) for blobs (sha1)
     /// LFS objects (path + entry where entry.oid is the sha256 oid)
-    pub lfs: Vec<(PathBuf, BlobEntry)>,   // (path, entry) for lfs (sha256)
+    pub lfs: Vec<(PathBuf, BlobEntry)>, // (path, entry) for lfs (sha256)
 }
 
 /// Build a local index by scanning `root` recursively. The returned Index maps
@@ -64,7 +64,13 @@ pub fn build_local_index(root: &Path) -> Result<Index, Error> {
             // Try to find line "oid sha256:<hex>"
             let lower = content
                 .iter()
-                .map(|b| if b.is_ascii_uppercase() { b.to_ascii_lowercase() } else { *b })
+                .map(|b| {
+                    if b.is_ascii_uppercase() {
+                        b.to_ascii_lowercase()
+                    } else {
+                        *b
+                    }
+                })
                 .collect::<Vec<u8>>();
             let needle = b"oid sha256:";
             if let Some(pos) = lower.windows(needle.len()).position(|w| w == needle) {
@@ -78,7 +84,9 @@ pub fn build_local_index(root: &Path) -> Result<Index, Error> {
                     end += 1;
                 }
                 let oid_bytes = &content[start..end];
-                let oid = String::from_utf8_lossy(oid_bytes).trim().to_ascii_lowercase();
+                let oid = String::from_utf8_lossy(oid_bytes)
+                    .trim()
+                    .to_ascii_lowercase();
                 let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
                 index.insert(
                     rel,

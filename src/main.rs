@@ -1,8 +1,8 @@
 //! Minimal CLI entrypoint performing an HTTP-based sync using Azure DevOps APIs.
-use std::path::Path;
 use anyhow::Result;
 use clap::Parser;
-use modsync::{config::Config, http::AzureClient, index, downloader};
+use modsync::{config::Config, downloader, http::AzureClient, index};
+use std::path::Path;
 use tokio::io::AsyncWriteExt;
 
 #[derive(Parser)]

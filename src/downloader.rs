@@ -546,193 +546,197 @@ pub fn start_download_job(
 }
 
 pub async fn execute_plan(
-   client: &crate::http::AzureClient,
-   plan: crate::index::SyncPlan,
-   out_dir: &std::path::Path,
+    client: &crate::http::AzureClient,
+    plan: crate::index::SyncPlan,
+    out_dir: &std::path::Path,
 ) -> Result<Summary, anyhow::Error> {
-   // Minimal sequential implementation (KISS): download each blob and LFS object
-   // one-by-one, write into out_dir/.tmp then move into place, verify sizes/hashes.
+    // Minimal sequential implementation (KISS): download each blob and LFS object
+    // one-by-one, write into out_dir/.tmp then move into place, verify sizes/hashes.
 
-   // Local imports
-   use anyhow::Context;
-   use hex;
-   use sha1::{Digest as Sha1Digest, Sha1};
-   use sha2::{Digest as Sha2Digest, Sha256};
-   use std::collections::HashMap;
-   use tokio::fs;
-   use tokio::io::AsyncWriteExt;
+    // Local imports
+    use anyhow::Context;
+    use hex;
+    use sha1::{Digest as Sha1Digest, Sha1};
+    use sha2::{Digest as Sha2Digest, Sha256};
+    use std::collections::HashMap;
+    use tokio::fs;
+    use tokio::io::AsyncWriteExt;
 
-   let tmp_base = out_dir.join(".tmp");
-   fs::create_dir_all(&tmp_base)
-       .await
-       .with_context(|| format!("creating tmp dir {}", tmp_base.display()))?;
+    let tmp_base = out_dir.join(".tmp");
+    fs::create_dir_all(&tmp_base)
+        .await
+        .with_context(|| format!("creating tmp dir {}", tmp_base.display()))?;
 
-   let mut blobs_downloaded: usize = 0;
-   let mut lfs_downloaded: usize = 0;
-   let mut bytes_done: u64 = 0;
+    let mut blobs_downloaded: usize = 0;
+    let mut lfs_downloaded: usize = 0;
+    let mut bytes_done: u64 = 0;
 
-   // Blobs (git SHA-1)
-   for (path, entry) in plan.blobs.into_iter() {
-       let bytes = client
-           .get_blob_by_oid(&entry.oid)
-           .await
-           .with_context(|| format!("failed to download blob {}", entry.oid))?;
+    // Blobs (git SHA-1)
+    for (path, entry) in plan.blobs.into_iter() {
+        let bytes = client
+            .get_blob_by_oid(&entry.oid)
+            .await
+            .with_context(|| format!("failed to download blob {}", entry.oid))?;
 
-       let dest_path = out_dir.join(&path);
-       if let Some(parent) = dest_path.parent() {
-           fs::create_dir_all(parent).await.ok();
-       }
+        let dest_path = out_dir.join(&path);
+        if let Some(parent) = dest_path.parent() {
+            fs::create_dir_all(parent).await.ok();
+        }
 
-       let part = tmp_base.join(path.with_extension("part"));
-       if let Some(parent) = part.parent() {
-           fs::create_dir_all(parent).await.ok();
-       }
-       let mut f = fs::File::create(&part)
-           .await
-           .with_context(|| format!("create part file {}", part.display()))?;
-       f.write_all(&bytes).await?;
-       f.flush().await.ok();
+        let part = tmp_base.join(path.with_extension("part"));
+        if let Some(parent) = part.parent() {
+            fs::create_dir_all(parent).await.ok();
+        }
+        let mut f = fs::File::create(&part)
+            .await
+            .with_context(|| format!("create part file {}", part.display()))?;
+        f.write_all(&bytes).await?;
+        f.flush().await.ok();
 
-       let got_len = bytes.len() as u64;
-       if got_len != entry.size {
-           return Err(anyhow::anyhow!(
-               "blob size mismatch for {}: expected {}, got {}",
-               path.display(),
-               entry.size,
-               got_len
-           ));
-       }
+        let got_len = bytes.len() as u64;
+        if got_len != entry.size {
+            return Err(anyhow::anyhow!(
+                "blob size mismatch for {}: expected {}, got {}",
+                path.display(),
+                entry.size,
+                got_len
+            ));
+        }
 
-       let mut hasher = Sha1::new();
-       hasher.update(format!("blob {}\u{0}", got_len).as_bytes());
-       hasher.update(&bytes);
-       let got_oid = hex::encode(hasher.finalize());
-       if !entry.is_lfs && got_oid != entry.oid {
-           return Err(anyhow::anyhow!(
-               "blob oid mismatch for {}: expected {}, got {}",
-               path.display(),
-               entry.oid,
-               got_oid
-           ));
-       }
+        let mut hasher = Sha1::new();
+        hasher.update(format!("blob {}\u{0}", got_len).as_bytes());
+        hasher.update(&bytes);
+        let got_oid = hex::encode(hasher.finalize());
+        if !entry.is_lfs && got_oid != entry.oid {
+            return Err(anyhow::anyhow!(
+                "blob oid mismatch for {}: expected {}, got {}",
+                path.display(),
+                entry.oid,
+                got_oid
+            ));
+        }
 
-       fs::create_dir_all(dest_path.parent().unwrap_or_else(|| std::path::Path::new(".")))
-           .await
-           .ok();
-       fs::rename(&part, &dest_path)
-           .await
-           .with_context(|| format!("rename {} -> {}", part.display(), dest_path.display()))?;
+        fs::create_dir_all(
+            dest_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new(".")),
+        )
+        .await
+        .ok();
+        fs::rename(&part, &dest_path)
+            .await
+            .with_context(|| format!("rename {} -> {}", part.display(), dest_path.display()))?;
 
-       blobs_downloaded += 1;
-       bytes_done = bytes_done.saturating_add(got_len);
-   }
+        blobs_downloaded += 1;
+        bytes_done = bytes_done.saturating_add(got_len);
+    }
 
-   // LFS objects (group by oid)
-   if !plan.lfs.is_empty() {
-       let mut oid_map: HashMap<String, Vec<(PathBuf, Option<u64>)>> = HashMap::new();
-       for (path, entry) in plan.lfs.into_iter() {
-           oid_map
-               .entry(entry.oid.clone())
-               .or_default()
-               .push((path, Some(entry.size)));
-       }
+    // LFS objects (group by oid)
+    if !plan.lfs.is_empty() {
+        let mut oid_map: HashMap<String, Vec<(PathBuf, Option<u64>)>> = HashMap::new();
+        for (path, entry) in plan.lfs.into_iter() {
+            oid_map
+                .entry(entry.oid.clone())
+                .or_default()
+                .push((path, Some(entry.size)));
+        }
 
-       let mut objs: Vec<crate::http::LfsObject> = Vec::new();
-       for (oid, items) in oid_map.iter() {
-           let size = items.first().and_then(|(_, s)| *s);
-           objs.push(crate::http::LfsObject {
-               oid: oid.clone(),
-               size,
-           });
-       }
+        let mut objs: Vec<crate::http::LfsObject> = Vec::new();
+        for (oid, items) in oid_map.iter() {
+            let size = items.first().and_then(|(_, s)| *s);
+            objs.push(crate::http::LfsObject {
+                oid: oid.clone(),
+                size,
+            });
+        }
 
-       let batch_req = crate::http::LfsBatchRequest {
-           operation: "download".to_string(),
-           objects: objs,
-       };
-       let batch_resp = client
-           .lfs_batch(batch_req)
-           .await
-           .with_context(|| "lfs batch request failed")?;
+        let batch_req = crate::http::LfsBatchRequest {
+            operation: "download".to_string(),
+            objects: objs,
+        };
+        let batch_resp = client
+            .lfs_batch(batch_req)
+            .await
+            .with_context(|| "lfs batch request failed")?;
 
-       for obj in batch_resp.objects.into_iter() {
-           let oid = obj.oid;
-           let size = obj.size;
-           let href_opt = obj
-               .actions
-               .and_then(|mut acts| acts.remove("download").and_then(|a| a.href));
-           if href_opt.is_none() {
-               continue;
-           }
-           let href = href_opt.unwrap();
+        for obj in batch_resp.objects.into_iter() {
+            let oid = obj.oid;
+            let size = obj.size;
+            let href_opt = obj
+                .actions
+                .and_then(|mut acts| acts.remove("download").and_then(|a| a.href));
+            if href_opt.is_none() {
+                continue;
+            }
+            let href = href_opt.unwrap();
 
-           let resp = client
-               .client
-               .get(&href)
-               .send()
-               .await
-               .with_context(|| format!("lfs GET failed for {}", href))?;
-           let status = resp.status();
-           let bytes = resp
-               .bytes()
-               .await
-               .with_context(|| format!("failed to read lfs body for {}", href))?;
-           if !status.is_success() {
-               return Err(anyhow::anyhow!("lfs GET non-success {}: {}", href, status));
-           }
+            let resp = client
+                .client
+                .get(&href)
+                .send()
+                .await
+                .with_context(|| format!("lfs GET failed for {}", href))?;
+            let status = resp.status();
+            let bytes = resp
+                .bytes()
+                .await
+                .with_context(|| format!("failed to read lfs body for {}", href))?;
+            if !status.is_success() {
+                return Err(anyhow::anyhow!("lfs GET non-success {}: {}", href, status));
+            }
 
-           if let Some(expected) = size {
-               if bytes.len() as u64 != expected {
-                   return Err(anyhow::anyhow!(
-                       "lfs size mismatch for oid {}: expected {}, got {}",
-                       oid,
-                       expected,
-                       bytes.len()
-                   ));
-               }
-           }
+            if let Some(expected) = size {
+                if bytes.len() as u64 != expected {
+                    return Err(anyhow::anyhow!(
+                        "lfs size mismatch for oid {}: expected {}, got {}",
+                        oid,
+                        expected,
+                        bytes.len()
+                    ));
+                }
+            }
 
-           let mut hasher = Sha256::new();
-           hasher.update(&bytes);
-           let got = hex::encode(hasher.finalize());
-           if got != oid {
-               return Err(anyhow::anyhow!(
-                   "lfs oid mismatch for oid {}: expected {}, got {}",
-                   oid,
-                   oid,
-                   got
-               ));
-           }
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            let got = hex::encode(hasher.finalize());
+            if got != oid {
+                return Err(anyhow::anyhow!(
+                    "lfs oid mismatch for oid {}: expected {}, got {}",
+                    oid,
+                    oid,
+                    got
+                ));
+            }
 
-           let part = tmp_base.join(format!("{}.part", oid));
-           if let Some(parent) = part.parent() {
-               fs::create_dir_all(parent).await.ok();
-           }
-           let mut f = fs::File::create(&part)
-               .await
-               .with_context(|| format!("create lfs part {}", part.display()))?;
-           f.write_all(&bytes).await?;
-           f.flush().await.ok();
+            let part = tmp_base.join(format!("{}.part", oid));
+            if let Some(parent) = part.parent() {
+                fs::create_dir_all(parent).await.ok();
+            }
+            let mut f = fs::File::create(&part)
+                .await
+                .with_context(|| format!("create lfs part {}", part.display()))?;
+            f.write_all(&bytes).await?;
+            f.flush().await.ok();
 
-           if let Some(paths) = oid_map.get(&oid) {
-               for (path, _) in paths {
-                   let dest_path = out_dir.join(path);
-                   if let Some(parent) = dest_path.parent() {
-                       fs::create_dir_all(parent).await.ok();
-                   }
-                   fs::copy(&part, &dest_path)
-                       .await
-                       .with_context(|| format!("copy {} -> {}", part.display(), dest_path.display()))?;
-                   lfs_downloaded += 1;
-                   bytes_done = bytes_done.saturating_add(bytes.len() as u64);
-               }
-           }
-           let _ = fs::remove_file(&part).await;
-       }
-   }
+            if let Some(paths) = oid_map.get(&oid) {
+                for (path, _) in paths {
+                    let dest_path = out_dir.join(path);
+                    if let Some(parent) = dest_path.parent() {
+                        fs::create_dir_all(parent).await.ok();
+                    }
+                    fs::copy(&part, &dest_path).await.with_context(|| {
+                        format!("copy {} -> {}", part.display(), dest_path.display())
+                    })?;
+                    lfs_downloaded += 1;
+                    bytes_done = bytes_done.saturating_add(bytes.len() as u64);
+                }
+            }
+            let _ = fs::remove_file(&part).await;
+        }
+    }
 
-   Ok(Summary {
-       files_done: blobs_downloaded + lfs_downloaded,
-       bytes_done,
-   })
+    Ok(Summary {
+        files_done: blobs_downloaded + lfs_downloaded,
+        bytes_done,
+    })
 }
