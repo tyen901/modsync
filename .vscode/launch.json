@@ -1,25 +1,15 @@
 {
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "Debug modsync (LLDB - debug)",
-            "type": "lldb",
-            "request": "launch",
-            "program": "${workspaceFolder}/target/debug/modsync.exe",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "preLaunchTask": "cargo: build (debug)",
-            "stopOnEntry": false
-        },
-        {
-            "name": "Debug modsync (LLDB - release)",
-            "type": "lldb",
-            "request": "launch",
-            "program": "${workspaceFolder}/target/release/modsync.exe",
-            "args": [],
-            "cwd": "${workspaceFolder}",
-            "preLaunchTask": "cargo: build (release)",
-            "stopOnEntry": false
-        }
-    ]
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Run and debug executable 'modsync'",
+      "program": "${workspaceFolder}/target/debug/modsync.exe",
+      "preLaunchTask": "build: debug with config",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "terminal": "integrated"
+    }
+  ]
 }
