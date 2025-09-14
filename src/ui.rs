@@ -352,3 +352,26 @@ impl App {
         self.messages.push(msg.to_string());
     }
 }
+
+pub fn attach_downloader_consumer<F>(
+    items: Vec<crate::downloader::LfsDownloadItem>,
+    cfg: crate::downloader::DownloaderConfig,
+    on_event: F,
+) -> std::sync::mpsc::Sender<crate::downloader::ControlCommand>
+where
+    F: Fn(crate::downloader::ProgressEvent) + Send + 'static,
+{
+    let (progress_rx, control_tx, join_handle) = crate::downloader::start_download_job(items, cfg);
+
+    std::thread::spawn(move || {
+        while let Ok(ev) = progress_rx.recv() {
+            on_event(ev);
+        }
+    });
+
+    std::thread::spawn(move || {
+        let _ = join_handle.join();
+    });
+
+    control_tx
+}
