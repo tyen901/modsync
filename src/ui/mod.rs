@@ -67,9 +67,9 @@ impl App {
         use crossterm::event as crossterm_event;
 
         loop {
-            // Drain any pending log messages sent from background tasks.
-            while let Ok(msg) = self.log_rx.try_recv() {
-                self.messages.push(msg);
+            // Drain task updates and apply them to the app state.
+            while let Ok(upd) = self.task_rx.try_recv() {
+                self.apply_task_update(upd);
             }
 
             // Draw the current state.

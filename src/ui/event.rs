@@ -26,19 +26,29 @@ pub async fn handle_event(app: &mut App, ev: Event) -> Result<bool> {
             match key.kind {
                 KeyEventKind::Press | KeyEventKind::Repeat => match key.code {
                     KeyCode::Up => {
-                        if app.selected > 0 {
-                            app.selected -= 1;
+                        // Only allow menu navigation when no task is running.
+                        if app.current_task.is_none() {
+                            if app.selected > 0 {
+                                app.selected -= 1;
+                            }
                         }
                     }
                     KeyCode::Down => {
-                        if app.selected + 1 < app.menu.len() {
-                            app.selected += 1;
+                        if app.current_task.is_none() {
+                            if app.selected + 1 < app.menu.len() {
+                                app.selected += 1;
+                            }
                         }
                     }
                     KeyCode::Enter => {
                         // Clone the selected index to avoid borrow issues in async context.
-                        let idx = app.selected;
-                        actions::dispatch(app, idx).await?;
+                        // Prevent dispatching a new action while one is running.
+                        if app.current_task.is_none() {
+                            let idx = app.selected;
+                            actions::dispatch(app, idx).await?;
+                        } else {
+                            // ignore enter while a task is active
+                        }
                     }
                     KeyCode::Char('q') => {
                         // Exit the application on 'q'.

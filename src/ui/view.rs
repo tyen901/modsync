@@ -36,10 +36,16 @@ pub fn render(f: &mut Frame, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, m)| {
-            let style = if i == app.selected {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            // If a task is active, dim the entire menu to indicate it's disabled.
+            let base = if app.current_task.is_some() {
+                Style::default().fg(Color::Gray).add_modifier(Modifier::DIM)
             } else {
                 Style::default()
+            };
+            let style = if i == app.selected {
+                base.fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                base
             };
             ListItem::new((*m).to_string()).style(style)
         })
@@ -47,34 +53,46 @@ pub fn render(f: &mut Frame, app: &App) {
     let menu_list = List::new(items).block(Block::default().title("Menu").borders(Borders::ALL));
     f.render_widget(menu_list, chunks[0]);
 
-    // Split the right-hand area vertically into a Config panel (top)
-    // and a Log panel (bottom).
-    let right_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(7), Constraint::Min(0)].as_ref())
-        .split(chunks[1]);
+    // The right-hand area fills the remaining space.  It shows either
+    // the current task (with stages) while a task is running, or the
+    // modpack state/config information when idle.
+    let right = chunks[1];
 
-    // Build a textual representation of the current config.
-    let arma_path = match &app.config.arma_executable {
-        Some(p) => format!("{}", p.display()),
-        None => String::from("<not set>"),
-    };
-    let config_lines = vec![
-        format!("Repo URL: {}", app.config.repo_url),
-        format!("Target mods: {}", app.config.target_mod_dir.display()),
-        format!("Arma exe: {}", arma_path),
-    ];
-    let config_text = config_lines.join("\n");
-
-    let config_widget = Paragraph::new(config_text)
-        .block(Block::default().title("Config").borders(Borders::ALL))
-        .wrap(Wrap { trim: true });
-    f.render_widget(config_widget, right_chunks[0]);
-
-    // Build log messages.
-    let log_text = app.messages.join("\n");
-    let log_widget = Paragraph::new(log_text)
-        .block(Block::default().title("Log").borders(Borders::ALL))
-        .wrap(Wrap { trim: false });
-    f.render_widget(log_widget, right_chunks[1]);
+    if let Some(task) = &app.current_task {
+        // Render task name and stages as a vertical list.
+        let mut lines = vec![format!("Task: {}", task.name)];
+        for (i, stage) in task.stages.iter().enumerate() {
+            let status_str: String = match &task.stage_statuses[i] {
+                super::state::TaskStageStatus::Pending => "[ ]".to_string(),
+                super::state::TaskStageStatus::InProgress => "[~]".to_string(),
+                super::state::TaskStageStatus::Done => "[x]".to_string(),
+                super::state::TaskStageStatus::Failed(msg) => format!("[!] {}", msg),
+            };
+            lines.push(format!(" {} {}", status_str, stage));
+        }
+        let text = lines.join("\n");
+        let widget = Paragraph::new(text)
+            .block(Block::default().title("Task Progress").borders(Borders::ALL))
+            .wrap(Wrap { trim: true });
+        f.render_widget(widget, right);
+    } else {
+        // Idle view: display configuration and current modpack state.
+        let arma_path = match &app.config.arma_executable {
+            Some(p) => format!("{}", p.display()),
+            None => String::from("<not set>"),
+        };
+        let mut lines = vec![
+            format!("Repo URL: {}", app.config.repo_url),
+            format!("Target mods: {}", app.config.target_mod_dir.display()),
+            format!("Arma exe: {}", arma_path),
+            String::new(),
+            "Modpack state:".to_string(),
+        ];
+        lines.extend(app.modpack_state.clone());
+        let text = lines.join("\n");
+        let widget = Paragraph::new(text)
+            .block(Block::default().title("Config / Modpack").borders(Borders::ALL))
+            .wrap(Wrap { trim: true });
+        f.render_widget(widget, right);
+    }
 }

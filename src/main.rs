@@ -8,7 +8,6 @@
 
 use anyhow::Result;
 use modsync::{config, ui};
-use modsync::logging;
 
 /// Asynchronously initialises the application and hands control over to the
 /// TUI.  Tokio is used here to allow potentially long‑running operations (for
@@ -22,11 +21,6 @@ async fn main() -> Result<()> {
     // stderr.
     let config = config::Config::load()?;
 
-    // Initialise file-backed logger early to capture any diagnostic
-    // messages without writing to stdout/stderr which could clobber the
-    // alternate screen UI. The UI itself uses its own log channel for
-    // messages displayed in the in-app Log panel.
-    logging::init();
 
     // Create and run the TUI.  The UI holds its own copy of the
     // configuration and updates it as the user makes changes.  When

@@ -1,16 +1,17 @@
 //! Long‑running actions triggered from the UI.
 //!
 //! The functions in this module encapsulate the logic for each menu
-//! action.  They perform potentially blocking operations on a
-//! background thread so as not to stall the async event loop.  Log
-//! messages are sent back to the UI via the `log_tx` channel on the
-//! [`App`] state.  The primary entry point is [`dispatch`], which
-//! examines the selected menu item and spawns the appropriate action.
+//! action. They perform blocking operations on a background thread
+//! so as not to stall the async event loop.  Progress is reported via
+//! `TaskUpdate` messages sent on the app's task channel. The primary
+//! entry point is [`dispatch`], which examines the selected menu item
+//! and spawns the appropriate action.
 
 use anyhow::Result;
 use super::state::App;
 use tokio::task;
 use crate::{gitutils, modpack, arma};
+use super::state::TaskUpdate;
 
 /// Dispatches the selected menu entry.  This function spawns
 /// blocking operations on a threadpool so as not to block the async
@@ -20,125 +21,173 @@ use crate::{gitutils, modpack, arma};
 pub async fn dispatch(app: &mut App, idx: usize) -> Result<()> {
     match app.menu.get(idx).copied() {
         Some("Sync Modpack") => {
-            app.log("Starting sync...");
             let config = app.config.clone();
-            let log_tx = app.log_tx.clone();
+            let task_tx = app.task_tx.clone();
+            // Define stages for sync.
+            let stages = vec![
+                "Prepare repo cache".to_string(),
+                "Clone/Fetch repository".to_string(),
+                "Sync files".to_string(),
+            ];
+            // Notify UI a task is starting.
+            let _ = task_tx.send(TaskUpdate::Start { name: "Sync Modpack".to_string(), stages: stages.clone() });
             task::spawn_blocking(move || {
-                // Ensure any previous repo URL mismatch clears the cache.
+                // Stage 0: prepare
+                let _ = task_tx.send(TaskUpdate::StageStarted(0));
                 if let Err(e) = config.ensure_repo_cache_for_url() {
-                    let _ = log_tx.send(format!("Failed to ensure repo cache: {e}"));
+                    let _ = task_tx.send(TaskUpdate::StageFailed(0, format!("{e}")));
+                    let _ = task_tx.send(TaskUpdate::Aborted);
+                    return;
                 }
+                let _ = task_tx.send(TaskUpdate::StageCompleted(0));
 
+                // Stage 1: clone/fetch
+                let _ = task_tx.send(TaskUpdate::StageStarted(1));
                 let repo_path = config.repo_cache_path();
                 match gitutils::clone_or_open_repo(&config.repo_url, &repo_path) {
                     Ok(repo) => {
                         let _ = gitutils::fetch(&repo);
+                        let _ = task_tx.send(TaskUpdate::StageCompleted(1));
+                        // Stage 2: sync files
+                        let _ = task_tx.send(TaskUpdate::StageStarted(2));
                         match modpack::sync_modpack(&repo_path, &config.target_mod_dir) {
                             Ok(()) => {
-                                let _ = log_tx.send("Sync complete".to_string());
+                                let _ = task_tx.send(TaskUpdate::StageCompleted(2));
+                                // Send finished state lines (simple example).
+                                let state_lines = vec!["Sync: OK".to_string()];
+                                let _ = task_tx.send(TaskUpdate::Finished(state_lines));
                             }
                             Err(e) => {
-                                let _ = log_tx.send(format!("Sync failed: {e}"));
+                                let _ = task_tx.send(TaskUpdate::StageFailed(2, format!("{e}")));
+                                let _ = task_tx.send(TaskUpdate::Aborted);
                             }
                         }
                     }
                     Err(e) => {
-                        let _ = log_tx.send(format!("Failed to clone or open repository: {e}"));
+                        let _ = task_tx.send(TaskUpdate::StageFailed(1, format!("{e}")));
+                        let _ = task_tx.send(TaskUpdate::Aborted);
                     }
                 }
             });
         }
         Some("Validate Files") => {
-            app.log("Validating files...");
             let config = app.config.clone();
-            let log_tx = app.log_tx.clone();
+            let task_tx = app.task_tx.clone();
+            let stages = vec!["Prepare".to_string(), "Run validation".to_string(), "Report".to_string()];
+            let _ = task_tx.send(TaskUpdate::Start { name: "Validate Files".to_string(), stages: stages.clone() });
             task::spawn_blocking(move || {
+                let _ = task_tx.send(TaskUpdate::StageStarted(0));
                 let repo_path = config.repo_cache_path();
+                let _ = task_tx.send(TaskUpdate::StageCompleted(0));
+                let _ = task_tx.send(TaskUpdate::StageStarted(1));
                 match modpack::validate_modpack(&repo_path, &config.target_mod_dir) {
                     Ok(mismatches) => {
+                        let mut state_lines = Vec::new();
                         if mismatches.is_empty() {
-                            let _ = log_tx.send("All files are valid".to_string());
+                            state_lines.push("All files valid".to_string());
+                            state_lines.push("All files valid".to_string());
                         } else {
                             let msg = format!("{} file(s) need healing", mismatches.len());
-                            let _ = log_tx.send(msg);
+                            state_lines.push(msg.clone());
                             for m in mismatches.iter().take(10) {
-                                let _ = log_tx.send(format!("- {}", m.display()));
+                                let line = format!("- {}", m.display());
+                                state_lines.push(line);
                             }
                             if mismatches.len() > 10 {
-                                let _ = log_tx.send("...".to_string());
+                                state_lines.push("...".to_string());
                             }
                         }
+                        let _ = task_tx.send(TaskUpdate::StageCompleted(1));
+                        let _ = task_tx.send(TaskUpdate::StageCompleted(2));
+                        let _ = task_tx.send(TaskUpdate::Finished(state_lines));
                     }
                     Err(e) => {
-                        let _ = log_tx.send(format!("Validation failed: {e}"));
+                        let _ = task_tx.send(TaskUpdate::StageFailed(1, format!("{e}")));
+                        let _ = task_tx.send(TaskUpdate::Aborted);
                     }
                 }
             });
         }
         Some("Check Updates") => {
-            app.log("Checking for updates...");
             let config = app.config.clone();
-            let log_tx = app.log_tx.clone();
+            let task_tx = app.task_tx.clone();
+            let stages = vec!["Prepare".to_string(), "Fetch".to_string(), "Compare heads".to_string()];
+            let _ = task_tx.send(TaskUpdate::Start { name: "Check Updates".to_string(), stages: stages.clone() });
             task::spawn_blocking(move || {
-                // Ensure the repo cache is valid for the configured URL.
+                let _ = task_tx.send(TaskUpdate::StageStarted(0));
                 if let Err(e) = config.ensure_repo_cache_for_url() {
-                    let _ = log_tx.send(format!("Failed to ensure repo cache: {e}"));
+                    let _ = task_tx.send(TaskUpdate::StageFailed(0, format!("{e}")));
+                    let _ = task_tx.send(TaskUpdate::StageFailed(0, format!("{e}")));
+                    let _ = task_tx.send(TaskUpdate::Aborted);
+                    return;
                 }
+                let _ = task_tx.send(TaskUpdate::StageCompleted(0));
 
+                let _ = task_tx.send(TaskUpdate::StageStarted(1));
                 let repo_path = config.repo_cache_path();
                 match gitutils::clone_or_open_repo(&config.repo_url, &repo_path) {
                     Ok(repo) => {
                         let before = gitutils::head_oid(&repo).ok();
                         let _ = gitutils::fetch(&repo);
                         let after = gitutils::head_oid(&repo).ok();
+                        let mut state_lines = Vec::new();
                         match (before, after) {
                             (Some(b), Some(a)) => {
-                                if b != a {
-                                    let _ = log_tx.send("Update available".to_string());
-                                } else {
-                                    let _ = log_tx.send("Up to date".to_string());
-                                }
+                                        if b != a {
+                                            state_lines.push("Update available".to_string());
+                                        } else {
+                                            state_lines.push("Up to date".to_string());
+                                        }
                             }
                             _ => {
-                                let _ = log_tx.send("Could not determine update status".to_string());
-                            }
+                                    state_lines.push("Could not determine update status".to_string());
+                                }
                         }
+                        let _ = task_tx.send(TaskUpdate::StageCompleted(1));
+                        let _ = task_tx.send(TaskUpdate::Finished(state_lines));
                     }
                     Err(e) => {
-                        let _ = log_tx.send(format!("Failed to check updates: {e}"));
+                        let _ = task_tx.send(TaskUpdate::StageFailed(1, format!("{e}")));
+                        let _ = task_tx.send(TaskUpdate::Aborted);
                     }
                 }
             });
         }
         Some("Join Server") => {
-            app.log("Preparing to join server...");
             let config = app.config.clone();
-            let log_tx = app.log_tx.clone();
+            let task_tx = app.task_tx.clone();
+            let stages = vec!["Read metadata".to_string(), "Find Arma".to_string(), "Launch".to_string()];
+            let _ = task_tx.send(TaskUpdate::Start { name: "Join Server".to_string(), stages: stages.clone() });
             task::spawn_blocking(move || match config.read_metadata() {
                 Ok(Some(meta)) => {
+                    let _ = task_tx.send(TaskUpdate::StageStarted(0));
                     let arma_path = config.arma_executable.or_else(arma::detect_arma_path);
+                    let _ = task_tx.send(TaskUpdate::StageCompleted(0));
                     match arma_path {
-                        Some(path) => match arma::launch_arma(&path, &meta) {
-                            Ok(()) => {
-                                let _ = log_tx.send(format!(
-                                    "Launched Arma at {} and connected to {}:{}",
-                                    path.display(), meta.address, meta.port
-                                ));
+                        Some(path) => {
+                            let _ = task_tx.send(TaskUpdate::StageStarted(1));
+                            match arma::launch_arma(&path, &meta) {
+                                Ok(()) => {
+                                    let _ = task_tx.send(TaskUpdate::StageCompleted(1));
+                                    let _ = task_tx.send(TaskUpdate::Finished(vec![format!("Launched {}", path.display())]));
+                                }
+                                Err(_e) => {
+                                    let _ = task_tx.send(TaskUpdate::StageFailed(1, format!("{_e}")));
+                                    let _ = task_tx.send(TaskUpdate::Aborted);
+                                }
                             }
-                            Err(e) => {
-                                let _ = log_tx.send(format!("Failed to launch Arma: {e}"));
-                            }
-                        },
+                        }
                         None => {
-                            let _ = log_tx.send("Could not determine Arma executable path".to_string());
+                            let _ = task_tx.send(TaskUpdate::StageFailed(1, "Could not determine Arma executable path".to_string()));
+                            let _ = task_tx.send(TaskUpdate::Aborted);
                         }
                     }
                 }
                 Ok(None) => {
-                    let _ = log_tx.send("metadata.json not found in repository".to_string());
+                    let _ = task_tx.send(TaskUpdate::Aborted);
                 }
-                Err(e) => {
-                    let _ = log_tx.send(format!("Failed to read metadata: {e}"));
+                Err(_e) => {
+                    let _ = task_tx.send(TaskUpdate::Aborted);
                 }
             });
         }

@@ -3,7 +3,6 @@ pub mod config;
 pub mod gitutils;
 pub mod modpack;
 pub mod ui;
-pub mod logging;
 
 mod downloader;
 
