@@ -37,6 +37,7 @@ pub struct TorrentStats {
     pub upload_speed: f64,
     pub progress: f64,
     pub state: String,
+    #[allow(dead_code)]
     pub is_finished: bool,
     pub time_remaining: Option<String>,
 }

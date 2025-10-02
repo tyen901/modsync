@@ -41,7 +41,10 @@ pub async fn verify_folder_contents(
                 // Get the expected files list from torrent
                 let expected_files = get_expected_files_from_details(&details);
 
-                let mut has_missing_files = false;
+                // Will be set based on missing files check below. Do not initialize
+                // here to avoid the “value assigned is never read” warning since
+                // we either set it in the Ok branch or return on Err.
+                let has_missing_files: bool;
                 
                 // Check for missing files
                 match find_missing_files(&config.download_path, &expected_files) {

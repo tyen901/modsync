@@ -313,8 +313,6 @@ pub fn draw_ui(app: &mut MyApp, ctx: &egui::Context) {
     if !matches!(ui_action, UiAction::None) {
         println!("Processing UI action before modals: {:?}", ui_action);
         process_ui_action(ui_action, app);
-        // Reset action after processing
-        ui_action = UiAction::None;
     }
     
     // Draw modal dialogs if any - Use full path

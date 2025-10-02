@@ -54,10 +54,10 @@ fn draw_settings_modal(ctx: &Context, ui_state: &mut UiState) -> Option<UiAction
             ui.add_space(8.0);
             
             // Create a frame for the settings
-            egui::Frame::none()
+            egui::Frame::new()
                 .inner_margin(10.0)
                 .fill(ui.style().visuals.extreme_bg_color)
-                .rounding(4.0)
+                .corner_radius(4.0)
                 .show(ui, |ui| {
                     // Should seed checkbox
                     ui.horizontal(|ui| {
