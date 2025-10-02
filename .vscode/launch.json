@@ -44,6 +44,25 @@
         {
             "type": "lldb",
             "request": "launch",
+            "name": "Debug executable 'modsync' (release)",
+            "cargo": {
+                "args": [
+                    "build",
+                    "--release",
+                    "--bin=modsync",
+                    "--package=modsync"
+                ],
+                "filter": {
+                    "name": "modsync",
+                    "kind": "bin"
+                }
+            },
+            "args": [],
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "type": "lldb",
+            "request": "launch",
             "name": "Debug unit tests in executable 'modsync'",
             "cargo": {
                 "args": [

@@ -3,5 +3,6 @@
 
 pub mod sync;
 pub mod ui;
+pub mod settings;
 
 pub use librqbit;
