@@ -9,11 +9,9 @@
 
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
 use walkdir::WalkDir;
 
-use eframe::egui::Ui;
+use eframe::egui::{Ui, Pos2};
 use petgraph::{
     stable_graph::{DefaultIx, NodeIndex, StableGraph},
     Directed,
@@ -114,45 +112,27 @@ impl FileGraph {
             }
         }
 
-        // Convert once into interactive graph with custom transform for labels.
-        let mut ordinal: usize = 0;
+        // Deterministic circular layout (no guessing, no jitter):
         let total = pet_g.node_count().max(1);
-        self.g = Some(to_graph_custom(
-            &pet_g,
-            |n| {
-                // Use default transform (positions, etc.) then apply label.
-                default_node_transform(n);
-                // Distribute nodes around a circle with slight deterministic jitter so they do not all overlap at origin.
-                let idx = ordinal;
-                ordinal += 1;
-                let angle = 2.0 * std::f32::consts::PI * (idx as f32 / total as f32);
-                // radius grows with sqrt of total nodes to keep density reasonable
-                let base_radius = (total as f32).sqrt() * 30.0 + 50.0;
-                // deterministic jitter based on path hash (no external RNG dependency)
-                let mut hasher = DefaultHasher::new();
-                n.payload().path.hash(&mut hasher);
-                let h = hasher.finish();
-                let jitter_r = 12.0 * (((h & 0xFFFF) as f32) / 0xFFFF as f32 - 0.5); // [-6,6]
-                let jitter_a = 0.35 * ((((h >> 16) & 0xFFFF) as f32) / 0xFFFF as f32 - 0.5); // small angle offset
-                let r = base_radius + jitter_r;
-                let a = angle + jitter_a;
-                let x = r * a.cos();
-                let y = r * a.sin();
-                // If the API exposes set_location we use it; otherwise ignore (will be caught at compile time if wrong and adjusted).
-                #[allow(unused_must_use)]
-                {
-                    // Attempt common method names; only one should exist. The others are behind #[cfg(FALSE)] to avoid compile errors.
-                    #[allow(dead_code)]
-                    fn _dummy() {}
-                }
-                // Primary expected API:
-                n.set_location(eframe::egui::Pos2 { x, y });
-                // Visual emphasis: directories uppercase suffix
-                if n.payload().is_dir { n.set_label(format!("{}/", n.payload().label())); }
-                else { n.set_label(n.payload().label()); }
-            },
-            default_edge_transform,
-        ));
+        let radius = (total as f32).sqrt() * 35.0 + 60.0;
+        // Precompute positions keyed by path for lookup in transform closure.
+        let mut positions: HashMap<String, Pos2> = HashMap::with_capacity(total);
+        for (i, idx) in pet_g.node_indices().enumerate() {
+            if let Some(node) = pet_g.node_weight(idx) {
+                let angle = 2.0 * std::f32::consts::PI * (i as f32 / total as f32);
+                let x = radius * angle.cos();
+                let y = radius * angle.sin();
+                positions.insert(node.path.clone(), Pos2 { x, y });
+            }
+        }
+        self.g = Some(to_graph_custom(&pet_g, |n| {
+            default_node_transform(n);
+            if let Some(pos) = positions.get(&n.payload().path) {
+                n.set_location(*pos);
+            }
+            if n.payload().is_dir { n.set_label(format!("{}/", n.payload().label())); }
+            else { n.set_label(n.payload().label()); }
+        }, default_edge_transform));
         self.graph_fresh = true;
         self.built_root = Some(folder.to_path_buf());
     }
@@ -222,7 +202,8 @@ impl FileGraph {
             >::new(g)
                 .with_navigations(&SettingsNavigation::default().with_zoom_and_pan_enabled(true));
             // Force the graph viewport to claim all available space.
-            ui.add_sized(avail, &mut view);
+            let _response = ui.add_sized(avail, &mut view);
+            // Hover overlay disabled until node iteration API is confirmed.
         }
     }
 }
