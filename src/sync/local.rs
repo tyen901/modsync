@@ -1,5 +1,3 @@
-// src/sync/local.rs
-
 //! Operations related to the local torrent state
 
 use crate::config::AppConfig;
@@ -16,7 +14,6 @@ use super::utils::send_sync_status_event;
 use super::torrent::manage_torrent_task;
 use crate::config::get_cached_torrent_path;
 
-/// Function to verify local folder contents
 pub async fn verify_folder_contents(
     config: &AppConfig,
     state: &mut SyncState,  // Changed to mutable reference to update state
@@ -125,7 +122,6 @@ pub async fn verify_folder_contents(
     }
 }
 
-/// Function to fix missing files by restarting the torrent
 pub async fn fix_missing_files(
     config: &AppConfig,
     state: &mut SyncState,
@@ -203,7 +199,6 @@ pub async fn fix_missing_files(
     }
 }
 
-/// Function to delete extra files
 pub async fn delete_files(files_to_delete: &[PathBuf], ui_tx: &mpsc::UnboundedSender<SyncEvent>) {
     println!("Sync: Deleting {} files", files_to_delete.len());
     send_sync_status_event(ui_tx, SyncStatus::CheckingLocal); // Re-use the CheckingLocal status
@@ -235,7 +230,6 @@ pub async fn delete_files(files_to_delete: &[PathBuf], ui_tx: &mpsc::UnboundedSe
     }
 }
 
-/// Helper function to refresh the status of the managed torrent
 pub fn refresh_managed_torrent_status_event(
     api: &librqbit::Api,
     tx: &mpsc::UnboundedSender<SyncEvent>,
@@ -293,4 +287,4 @@ pub fn refresh_managed_torrent_status_event(
             let _ = tx.send(SyncEvent::Error(err_msg));
         }
     }
-} 
+}

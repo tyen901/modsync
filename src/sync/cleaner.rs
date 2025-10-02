@@ -5,9 +5,6 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
-/// Scans the download directory and returns a list of files
-/// that are present locally but not in the expected set.
-/// Expected files should be relative to the download_path.
 pub fn find_extra_files(
     download_path: &Path,
     expected_files: &HashSet<PathBuf>,
@@ -59,8 +56,6 @@ pub fn find_extra_files(
     Ok(extra_files)
 }
 
-/// Checks which expected files from the torrent are missing in the download directory
-/// Returns a HashSet of missing files (relative paths)
 pub fn find_missing_files(
     download_path: &Path,
     expected_files: &HashSet<PathBuf>,
@@ -107,8 +102,6 @@ pub fn find_missing_files(
     Ok(missing_files)
 }
 
-// Helper function (potentially moved here from sync::state or utils)
-// To parse TorrentDetailsResponse and get expected relative paths
 use librqbit::api::TorrentDetailsResponse;
 
 pub fn get_expected_files_from_details(
@@ -133,26 +126,23 @@ pub fn get_expected_files_from_details(
 
 #[cfg(test)]
 mod tests {
-    use super::*; // Import functions from outer module
+    use super::*;
     use std::collections::HashSet;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::tempdir;
-
-    // Import necessary structs from librqbit for mocking details
-    // Use the crate name directly as it's an external dependency
     use librqbit::{api::{TorrentDetailsResponse, TorrentDetailsResponseFile}, FileDetailsAttrs};
-
-    // Helper to create a dummy TorrentDetailsResponseFile
     fn create_dummy_file_detail(
         components: Vec<&str>,
         length: u64,
         included: bool,
     ) -> TorrentDetailsResponseFile {
+        let name = components.last().map(|s| s.to_string()).unwrap_or_default();
+        let comps: Vec<String> = components.into_iter().map(|s| s.to_string()).collect();
         TorrentDetailsResponseFile {
-            name: components.last().cloned().unwrap_or("").to_string(), // Simple name extraction
-            components: components.into_iter().map(String::from).collect(),
+            name,
+            components: comps,
             length,
             included,
             attributes: FileDetailsAttrs::default(), // Default attributes are fine for this test
@@ -224,9 +214,6 @@ mod tests {
         assert_eq!(expected, expected_set);
     }
 
-    // --- Tests for find_extra_files --- 
-
-    // Helper to setup a test directory with specified files
     fn setup_test_dir(files_to_create: &[&str]) -> Result<tempfile::TempDir, std::io::Error> {
         let dir = tempdir()?;
         for relative_path in files_to_create {
@@ -348,4 +335,4 @@ mod tests {
         assert!(extra.is_empty());
         Ok(())
     }
-} 
+}

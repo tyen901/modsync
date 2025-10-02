@@ -16,7 +16,6 @@ use super::remote::{apply_remote_update, direct_download_and_compare};
 use super::types::{LocalTorrentState, RemoteTorrentState, SyncState};
 use super::utils::send_sync_status_event;
 
-/// Main loop for the synchronization manager task
 pub async fn run_sync_manager(
     initial_config: AppConfig,
     api: librqbit::Api,
@@ -105,7 +104,6 @@ pub async fn run_sync_manager(
                                 if let LocalTorrentState::Active { id } = state.local {
                                     println!("Sync: Checking for extra files after update");
                                     send_sync_status_event(&ui_tx, SyncStatus::CheckingLocal);
-                                    // ... (rest of verification logic remains the same)
                                     match api.api_torrent_details(id.into()) {
                                         Ok(details) => {
                                             let expected_files = get_expected_files_from_details(&details);
@@ -174,4 +172,4 @@ pub async fn run_sync_manager(
             }
         }
     }
-} 
+}

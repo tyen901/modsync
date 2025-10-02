@@ -1,5 +1,3 @@
-// src/sync/remote.rs
-
 //! Operations related to the remote torrent state
 
 use crate::config::AppConfig;
@@ -15,7 +13,6 @@ use super::types::{LocalTorrentState, RemoteTorrentState, SyncState};
 use super::utils::{download_torrent, calculate_torrent_hash, get_local_torrent_hash, send_sync_status_event};
 use super::manage_torrent_task;
 
-/// Function to apply a remote update
 pub async fn apply_remote_update(
     config: &AppConfig,
     state: &mut SyncState,
@@ -25,13 +22,11 @@ pub async fn apply_remote_update(
 ) -> bool {
     send_sync_status_event(ui_tx, SyncStatus::UpdatingTorrent);
 
-    // Get current torrent ID to forget if we have one
     let current_id_to_forget = match state.local {
         LocalTorrentState::Active { id } => Some(id),
         LocalTorrentState::NotLoaded => None,
     };
 
-    // Process the update with the torrent manager
     match manage_torrent_task(
         config,
         api,
@@ -47,7 +42,6 @@ pub async fn apply_remote_update(
                 new_id
             );
 
-            // Update local state with new torrent ID
             state.local = match new_id {
                 Some(id) => LocalTorrentState::Active { id },
                 None => LocalTorrentState::NotLoaded,
@@ -56,7 +50,6 @@ pub async fn apply_remote_update(
             if let LocalTorrentState::Active { id } = state.local {
                 refresh_managed_torrent_status_event(api, ui_tx, id);
             }
-            // Let status be updated by refresh or next cycle
             true
         }
         Err(e) => {
@@ -69,7 +62,6 @@ pub async fn apply_remote_update(
     }
 }
 
-/// Function to directly download a remote torrent and compare with local
 pub async fn direct_download_and_compare(
     config: &AppConfig,
     state: &mut SyncState,
@@ -89,7 +81,6 @@ pub async fn direct_download_and_compare(
     );
     send_sync_status_event(ui_tx, SyncStatus::CheckingRemote);
 
-    // Download the remote torrent file
     match download_torrent(&config.torrent_url, http_client).await {
         Ok(remote_torrent) => {
             println!(
@@ -97,24 +88,20 @@ pub async fn direct_download_and_compare(
                 remote_torrent.len()
             );
 
-            // Calculate hash of remote torrent
             let remote_hash = calculate_torrent_hash(&remote_torrent);
             println!("Sync: Remote torrent hash: {}", remote_hash);
 
-            // Get local torrent hash (if exists)
             let local_hash_result = get_local_torrent_hash().await;
 
             match local_hash_result {
                 Ok(Some(local_hash)) => {
                     println!("Sync: Local torrent hash: {}", local_hash);
 
-                    // Compare hashes
                     if remote_hash != local_hash {
                         println!(
                             "Sync: Torrent has changed! Remote hash different from local hash."
                         );
 
-                        // Save the new torrent to cache
                         if let Ok(cache_path) = get_cached_torrent_path() {
                             println!(
                                 "Sync: Saving updated torrent to cache: {}",
@@ -129,10 +116,8 @@ pub async fn direct_download_and_compare(
                             }
                         }
 
-                        // Update the remote state
                         state.remote = RemoteTorrentState::UpdateAvailable;
 
-                        // Send update message to UI
                         if let Err(e) = ui_tx.send(SyncEvent::RemoteUpdateFound(remote_torrent)) {
                             let err_msg =
                                 format!("Failed to send update notification to UI: {}", e);
@@ -149,7 +134,6 @@ pub async fn direct_download_and_compare(
                 Ok(None) => {
                     println!("Sync: No local torrent found. This is a new torrent.");
 
-                    // Save the new torrent to cache
                     if let Ok(cache_path) = get_cached_torrent_path() {
                         println!(
                             "Sync: Saving new torrent to cache: {}",
@@ -164,10 +148,8 @@ pub async fn direct_download_and_compare(
                         }
                     }
 
-                    // Update the remote state
                     state.remote = RemoteTorrentState::UpdateAvailable;
 
-                    // Send update message to UI
                     if let Err(e) = ui_tx.send(SyncEvent::RemoteUpdateFound(remote_torrent)) {
                         let err_msg = format!("Failed to send update notification to UI: {}", e);
                         eprintln!("Sync: {}", err_msg);

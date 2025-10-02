@@ -1,9 +1,5 @@
-// src/ui/utils.rs
-// Common UI utilities and formatting functions
-
 use eframe::egui::Color32;
 
-/// Helper function to format speed in bytes/sec to KB/s or MB/s
 pub fn format_speed(bytes_per_sec: f64) -> String {
     if bytes_per_sec < 1024.0 {
         format!("{:.0} B/s", bytes_per_sec)
@@ -14,7 +10,6 @@ pub fn format_speed(bytes_per_sec: f64) -> String {
     }
 }
 
-/// Helper function to format file size in bytes to human-readable format
 pub fn format_size(bytes: u64) -> String {
     if bytes < 1024 {
         format!("{} B", bytes)
@@ -27,16 +22,15 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
-/// Enum representing the overall sync task status
 #[derive(Debug, Clone, PartialEq)]
 pub enum SyncStatus {
-    Idle,                  // Not performing any sync operations
-    CheckingRemote,        // Checking the remote torrent for updates
-    UpdatingTorrent,       // Updating/replacing the managed torrent
-    CheckingLocal,         // Verifying local files against torrent manifest
-    LocalActive,           // Local torrent is active and seeding/downloading
-    RemoteChanged,         // Remote torrent has changed, update available
-    Error(String),         // Error in the sync process
+    Idle,
+    CheckingRemote,
+    UpdatingTorrent,
+    CheckingLocal,
+    LocalActive,
+    RemoteChanged,
+    Error(String),
 }
 
 impl SyncStatus {
@@ -63,4 +57,4 @@ impl SyncStatus {
             SyncStatus::Error(err) => format!("Sync Error: {}", err),
         }
     }
-} 
+}

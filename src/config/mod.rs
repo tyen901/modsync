@@ -7,6 +7,20 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub enum DownloadMode {
+    Auto,           // Try BitTorrent first, fallback to HTTP if needed
+    BitTorrentOnly, // Only use BitTorrent
+    HttpOnly,       // Only use HTTP downloads
+    HttpFallback,   // Use HTTP as fallback after timeout
+}
+
+impl Default for DownloadMode {
+    fn default() -> Self {
+        DownloadMode::Auto
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AppConfig {
     pub torrent_url: String,
@@ -14,6 +28,9 @@ pub struct AppConfig {
     pub should_seed: bool,
     pub max_upload_speed: Option<u64>,  // in KB/s, None for unlimited
     pub max_download_speed: Option<u64>, // in KB/s, None for unlimited
+    pub http_base_urls: Vec<String>,     // Base URLs for HTTP downloads
+    pub download_mode: DownloadMode,     // Download strategy
+    pub fallback_timeout_seconds: u64,   // Timeout before HTTP fallback
 }
 
 impl Default for AppConfig {
@@ -24,6 +41,9 @@ impl Default for AppConfig {
             should_seed: true,  // Default to seeding
             max_upload_speed: None,  // Default to unlimited
             max_download_speed: None,  // Default to unlimited
+            http_base_urls: Vec::new(), // Default to empty
+            download_mode: DownloadMode::default(), // Auto mode
+            fallback_timeout_seconds: 30, // 30 second timeout
         }
     }
 }
@@ -36,6 +56,9 @@ struct ConfigLoader {
     should_seed: Option<bool>,
     max_upload_speed: Option<u64>,
     max_download_speed: Option<u64>,
+    http_base_urls: Option<Vec<String>>,
+    download_mode: Option<DownloadMode>,
+    fallback_timeout_seconds: Option<u64>,
 }
 
 pub fn get_config_path() -> Result<PathBuf> {
@@ -73,19 +96,30 @@ pub fn load_config(config_path: &Path) -> Result<AppConfig> {
             Ok(loader) => {
                 // Create AppConfig with defaults and override with values from file
                 let default_config = AppConfig::default();
+                // Determine if any optional fields were missing so we can upgrade the
+                // config file after constructing the full `AppConfig`. Compute this
+                // before consuming `loader` so we don't run into move/borrow issues.
+                let needs_upgrade = loader.should_seed.is_none() ||
+                    loader.max_upload_speed.is_none() ||
+                    loader.max_download_speed.is_none() ||
+                    loader.http_base_urls.is_none() ||
+                    loader.download_mode.is_none() ||
+                    loader.fallback_timeout_seconds.is_none();
+
                 let config = AppConfig {
                     torrent_url: loader.torrent_url.unwrap_or(default_config.torrent_url),
                     download_path: loader.download_path.unwrap_or(default_config.download_path),
                     should_seed: loader.should_seed.unwrap_or(default_config.should_seed),
                     max_upload_speed: loader.max_upload_speed.or(default_config.max_upload_speed),
                     max_download_speed: loader.max_download_speed.or(default_config.max_download_speed),
+                    http_base_urls: loader.http_base_urls.unwrap_or(default_config.http_base_urls),
+                    download_mode: loader.download_mode.unwrap_or(default_config.download_mode),
+                    fallback_timeout_seconds: loader.fallback_timeout_seconds.unwrap_or(default_config.fallback_timeout_seconds),
                 };
-                
+
                 // Optional: Save config back if it was modified (i.e., defaults were applied)
                 // This will update the config file with the new fields
-                if loader.should_seed.is_none() || 
-                   loader.max_upload_speed.is_none() || 
-                   loader.max_download_speed.is_none() {
+                     if needs_upgrade {
                     println!("Upgrading config file with new profile settings fields");
                     if let Err(e) = save_config(&config, config_path) {
                         eprintln!("Failed to upgrade config file: {}", e);
@@ -134,6 +168,9 @@ mod tests {
             should_seed: true,
             max_upload_speed: Some(100),
             max_download_speed: Some(500),
+            http_base_urls: vec!["http://example.com/files".to_string()],
+            download_mode: DownloadMode::Auto,
+            fallback_timeout_seconds: 30,
         };
 
         // Test saving
@@ -146,7 +183,10 @@ mod tests {
         assert_eq!(initial_config.download_path, loaded_config.download_path);
         assert_eq!(initial_config.should_seed, loaded_config.should_seed);
         assert_eq!(initial_config.max_upload_speed, loaded_config.max_upload_speed);
-        assert_eq!(initial_config.max_download_speed, loaded_config.max_download_speed);
+    assert_eq!(initial_config.max_download_speed, loaded_config.max_download_speed);
+    assert_eq!(initial_config.http_base_urls, loaded_config.http_base_urls);
+    assert_eq!(initial_config.download_mode, loaded_config.download_mode);
+    assert_eq!(initial_config.fallback_timeout_seconds, loaded_config.fallback_timeout_seconds);
 
         dir.close()?;
         Ok(())
@@ -161,8 +201,11 @@ mod tests {
         assert_eq!(loaded_config.torrent_url, "");
         assert_eq!(loaded_config.download_path, PathBuf::from(""));
         assert_eq!(loaded_config.should_seed, true);
-        assert_eq!(loaded_config.max_upload_speed, None);
-        assert_eq!(loaded_config.max_download_speed, None);
+    assert_eq!(loaded_config.max_upload_speed, None);
+    assert_eq!(loaded_config.max_download_speed, None);
+    assert_eq!(loaded_config.http_base_urls, Vec::<String>::new());
+    assert_eq!(loaded_config.download_mode, DownloadMode::default());
+    assert_eq!(loaded_config.fallback_timeout_seconds, 30);
 
         dir.close()?;
         Ok(())
@@ -185,9 +228,12 @@ mod tests {
         let loaded_config = load_config(&config_path)?;
         assert_eq!(loaded_config.torrent_url, "http://example.com/test.torrent");
         assert_eq!(loaded_config.download_path, PathBuf::from("/tmp/test_download"));
-        assert_eq!(loaded_config.should_seed, true); // Default value
-        assert_eq!(loaded_config.max_upload_speed, None); // Default value
-        assert_eq!(loaded_config.max_download_speed, None); // Default value
+    assert_eq!(loaded_config.should_seed, true); // Default value
+    assert_eq!(loaded_config.max_upload_speed, None); // Default value
+    assert_eq!(loaded_config.max_download_speed, None); // Default value
+    assert_eq!(loaded_config.http_base_urls, Vec::<String>::new()); // Default value
+    assert_eq!(loaded_config.download_mode, DownloadMode::default()); // Default value
+    assert_eq!(loaded_config.fallback_timeout_seconds, 30); // Default value
         
         dir.close()?;
         Ok(())
@@ -196,4 +242,4 @@ mod tests {
     // Note: Testing get_config_path() directly is tricky as ProjectDirs
     // might behave differently in test environments or across OSes.
     // Relying on load/save tests implicitly covers its basic usage.
-} 
+}
