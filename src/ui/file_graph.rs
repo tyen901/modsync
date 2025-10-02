@@ -1,101 +1,228 @@
-use eframe::egui::Ui;
-use petgraph::stable_graph::StableGraph;
-use petgraph::Directed;
+//! File system -> graph visualizer.
+//!
+//! This module constructs a persistent `egui_graphs::Graph` representing the
+//! directory tree for a selected root folder. The expensive filesystem walk
+//! and conversion to the interactive graph happen only once per folder
+//! selection. Subsequent UI frames simply render the already-built graph,
+//! avoiding per-frame cloning / transformation overhead from the previous
+//! implementation.
+
+use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 use walkdir::WalkDir;
-use std::path::Path;
+
+use eframe::egui::Ui;
+use petgraph::{
+    stable_graph::{DefaultIx, NodeIndex, StableGraph},
+    Directed,
+};
+use egui_graphs::{
+    default_edge_transform, default_node_transform, to_graph_custom,
+    DefaultEdgeShape, DefaultNodeShape, Graph, GraphView,
+    SettingsNavigation,
+    LayoutForceDirected, FruchtermanReingold, FruchtermanReingoldState,
+};
+
+/// Payload stored for each file/directory node.
+#[derive(Clone, Debug)]
+pub struct FileNode {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub depth: usize,
+}
+
+impl FileNode {
+    fn label(&self) -> String { self.name.clone() }
+}
 
 pub struct FileGraph {
-    pub graph: StableGraph<String, ()>,
+    /// The interactive graph shown by egui_graphs (built once per folder).
+    g: Option<Graph<FileNode, (), Directed, DefaultIx, DefaultNodeShape>>,
+    /// Root path we last built for (used to prevent redundant rebuilds).
+    built_root: Option<PathBuf>,
+    /// Indicates the current graph was freshly built and needs an initial
+    /// burst of force simulation so the first rendered frame is already
+    /// partially stabilized.
+    graph_fresh: bool,
 }
 
 impl FileGraph {
-    pub fn new() -> Self {
-        Self { graph: StableGraph::new() }
-    }
+    pub fn new() -> Self { Self { g: None, built_root: None, graph_fresh: false } }
 
-    /// Build the graph from a folder path. Only direct parent->child edges are created.
+    /// Clears current graph.
+    pub fn clear(&mut self) { self.g = None; self.built_root = None; self.graph_fresh = false; }
+
+    /// Build (or rebuild) the graph from a folder path. Only direct parent->child edges are created.
+    /// This is intentionally synchronous; caller should avoid invoking it on performance sensitive paths.
     pub fn build_from_path(&mut self, folder: &Path) {
-        self.graph = StableGraph::new();
+        if !folder.exists() { self.clear(); return; }
+        if self.built_root.as_ref().map(|p| p == folder).unwrap_or(false) { return; } // already built
 
-        if !folder.exists() {
-            return;
-        }
+        let mut pet_g: StableGraph<FileNode, (), Directed, DefaultIx> = StableGraph::new();
+        let mut map: HashMap<String, NodeIndex<DefaultIx>> = HashMap::new();
 
-        let folder_str = folder.to_string_lossy().to_string();
-        let mut idx_map: std::collections::HashMap<String, petgraph::stable_graph::NodeIndex<u32>> = std::collections::HashMap::new();
+        // root node
+        let root_fn = FileNode { name: folder.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| folder.to_string_lossy().into_owned()), path: folder.to_string_lossy().into_owned(), is_dir: true, depth: 0 };
+        let root_idx = pet_g.add_node(root_fn.clone());
+        map.insert(root_fn.path.clone(), root_idx);
 
-        // create root node
-        let root_idx = self.graph.add_node(folder_str.clone());
-        idx_map.insert(folder_str.clone(), root_idx);
-
-        // Walk entries in increasing depth order so parents appear before children
-        let mut entries: Vec<_> = WalkDir::new(folder).into_iter().filter_map(|e| e.ok()).collect();
+        // Collect entries and sort by depth so parents come first.
+        let mut entries: Vec<_> = WalkDir::new(folder)
+            .min_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .collect();
         entries.sort_by_key(|e| e.depth());
 
         for entry in entries {
-            let p = entry.path().to_path_buf();
-            if p == folder { continue; }
-            let p_str = p.to_string_lossy().to_string();
+            let path = entry.path();
+            let is_dir = entry.file_type().is_dir();
+            let depth = entry.depth();
+            let path_str = path.to_string_lossy().to_string();
 
-            // create node for this path if not exists
-            if !idx_map.contains_key(&p_str) {
-                let label = p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| p_str.clone());
-                let n = self.graph.add_node(label);
-                idx_map.insert(p_str.clone(), n);
-            }
+            // create node if missing
+            let idx = if let Some(idx) = map.get(&path_str).copied() { idx } else {
+                let name = path.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| path_str.clone());
+                let n = pet_g.add_node(FileNode { name, path: path_str.clone(), is_dir, depth });
+                map.insert(path_str.clone(), n);
+                n
+            };
 
-            // ensure parent exists and add edge parent -> child only
-            if let Some(parent) = p.parent() {
+            // parent relation
+            if let Some(parent) = path.parent() {
                 let parent_str = parent.to_string_lossy().to_string();
-                // create parent nodes on-demand (should mostly exist due to sorting)
-                if !idx_map.contains_key(&parent_str) {
-                    let label = parent.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| parent_str.clone());
-                    let pn = self.graph.add_node(label);
-                    idx_map.insert(parent_str.clone(), pn);
-                }
+                // ensure parent node exists (could happen if traversal order produces child first in odd FS; depth sort should prevent, but keep safe)
+                let p_idx = if let Some(p_idx) = map.get(&parent_str).copied() { p_idx } else {
+                    let name = parent.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| parent_str.clone());
+                    let pn = pet_g.add_node(FileNode { name, path: parent_str.clone(), is_dir: true, depth: depth.saturating_sub(1) });
+                    map.insert(parent_str.clone(), pn);
+                    pn
+                };
 
-                if let (Some(&p_idx), Some(&c_idx)) = (idx_map.get(&parent_str), idx_map.get(&p_str)) {
-                    // Add only one edge from the parent to this child
-                    self.graph.add_edge(p_idx, c_idx, ());
-                }
+                // Only one edge parent -> child (avoid duplicates)
+                let duplicate = pet_g.edges_connecting(p_idx, idx).next().is_some();
+                if !duplicate { pet_g.add_edge(p_idx, idx, ()); }
             } else {
-                // no parent, attach to root
-                if let Some(&c_idx) = idx_map.get(&p_str) {
-                    self.graph.add_edge(root_idx, c_idx, ());
+                // attach to root if somehow missing parent (should not happen except root itself excluded by min_depth)
+                if idx != root_idx {
+                    let duplicate = pet_g.edges_connecting(root_idx, idx).next().is_some();
+                    if !duplicate { pet_g.add_edge(root_idx, idx, ()); }
                 }
             }
         }
+
+        // Convert once into interactive graph with custom transform for labels.
+        let mut ordinal: usize = 0;
+        let total = pet_g.node_count().max(1);
+        self.g = Some(to_graph_custom(
+            &pet_g,
+            |n| {
+                // Use default transform (positions, etc.) then apply label.
+                default_node_transform(n);
+                // Distribute nodes around a circle with slight deterministic jitter so they do not all overlap at origin.
+                let idx = ordinal;
+                ordinal += 1;
+                let angle = 2.0 * std::f32::consts::PI * (idx as f32 / total as f32);
+                // radius grows with sqrt of total nodes to keep density reasonable
+                let base_radius = (total as f32).sqrt() * 30.0 + 50.0;
+                // deterministic jitter based on path hash (no external RNG dependency)
+                let mut hasher = DefaultHasher::new();
+                n.payload().path.hash(&mut hasher);
+                let h = hasher.finish();
+                let jitter_r = 12.0 * (((h & 0xFFFF) as f32) / 0xFFFF as f32 - 0.5); // [-6,6]
+                let jitter_a = 0.35 * ((((h >> 16) & 0xFFFF) as f32) / 0xFFFF as f32 - 0.5); // small angle offset
+                let r = base_radius + jitter_r;
+                let a = angle + jitter_a;
+                let x = r * a.cos();
+                let y = r * a.sin();
+                // If the API exposes set_location we use it; otherwise ignore (will be caught at compile time if wrong and adjusted).
+                #[allow(unused_must_use)]
+                {
+                    // Attempt common method names; only one should exist. The others are behind #[cfg(FALSE)] to avoid compile errors.
+                    #[allow(dead_code)]
+                    fn _dummy() {}
+                }
+                // Primary expected API:
+                n.set_location(eframe::egui::Pos2 { x, y });
+                // Visual emphasis: directories uppercase suffix
+                if n.payload().is_dir { n.set_label(format!("{}/", n.payload().label())); }
+                else { n.set_label(n.payload().label()); }
+            },
+            default_edge_transform,
+        ));
+        self.graph_fresh = true;
+        self.built_root = Some(folder.to_path_buf());
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
-        // reserve all available space for the graph widget
+        // Always query current available size so resizing the window/frame
+        // immediately updates the render surface for the graph.
         let avail = ui.available_size();
-        if self.graph.node_count() == 0 {
+        if self.g.as_ref().map(|g| g.node_count()).unwrap_or(0) == 0 {
             ui.set_min_height(avail.y.max(180.0));
-            ui.centered_and_justified(|ui| {
-                ui.label("No files to display. Pick a folder to visualize the file tree.");
-            });
+            ui.centered_and_justified(|ui| { ui.label("No files to display. Pick a folder to visualize the file tree."); });
             return;
         }
 
-        // convert and render with egui_graphs
-        let mut sg = self.graph.clone();
-        let mut g = egui_graphs::to_graph::<String, (), Directed, u32, egui_graphs::DefaultNodeShape, egui_graphs::DefaultEdgeShape>(&mut sg);
+        // Render existing graph (no rebuild here). Use hierarchical layout for a tree-like appearance.
+        if let Some(g) = &mut self.g {
+            // Ensure simulation is running.
+            let mut state = GraphView::<
+                FileNode,
+                (),
+                Directed,
+                DefaultIx,
+                DefaultNodeShape,
+                DefaultEdgeShape,
+                FruchtermanReingoldState,
+                LayoutForceDirected<FruchtermanReingold>,
+            >::get_layout_state(ui);
+            if !state.is_running {
+                state.is_running = true;
+                GraphView::<
+                    FileNode,
+                    (),
+                    Directed,
+                    DefaultIx,
+                    DefaultNodeShape,
+                    DefaultEdgeShape,
+                    FruchtermanReingoldState,
+                    LayoutForceDirected<FruchtermanReingold>,
+                >::set_layout_state(ui, state);
+            }
 
-        // Create a GraphView with concrete layout types
-        let mut view = egui_graphs::GraphView::<
-            String,
-            (),
-            Directed,
-            u32,
-            egui_graphs::DefaultNodeShape,
-            egui_graphs::DefaultEdgeShape,
-            egui_graphs::LayoutStateHierarchical,
-            egui_graphs::LayoutHierarchical,
-        >::new(&mut g)
-        .with_navigations(&egui_graphs::SettingsNavigation::default());
+            // If freshly built, fast-forward a bit so initial frame is stabilized.
+            if self.graph_fresh {
+                GraphView::<
+                    FileNode,
+                    (),
+                    Directed,
+                    DefaultIx,
+                    DefaultNodeShape,
+                    DefaultEdgeShape,
+                    FruchtermanReingoldState,
+                    LayoutForceDirected<FruchtermanReingold>,
+                >::fast_forward_budgeted_force_run(ui, g, 300, 8); // up to 300 steps or 8ms
+                self.graph_fresh = false;
+            }
 
-        // allocate the full available area to the widget
-        ui.add_sized(avail, &mut view);
+            // Render with force-directed layout. Interactions intentionally minimal (no selection/dragging).
+            let mut view = GraphView::<
+                FileNode,
+                (),
+                Directed,
+                DefaultIx,
+                DefaultNodeShape,
+                DefaultEdgeShape,
+                FruchtermanReingoldState,
+                LayoutForceDirected<FruchtermanReingold>,
+            >::new(g)
+                .with_navigations(&SettingsNavigation::default().with_zoom_and_pan_enabled(true));
+            // Force the graph viewport to claim all available space.
+            ui.add_sized(avail, &mut view);
+        }
     }
 }

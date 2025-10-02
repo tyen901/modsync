@@ -2,7 +2,6 @@ use eframe::{egui, App, Frame};
 use egui::{Color32, RichText};
 use std::time::Instant;
 
-
 use crate::ui::header::Header;
 use crate::ui::settings_panel::SettingsPanel;
 use crate::ui::file_graph::FileGraph;
@@ -55,84 +54,81 @@ impl App for ModApp {
         style.text_styles.get_mut(&egui::TextStyle::Body).map(|ts| ts.size = 15.0);
         ctx.set_style(style);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // header row
+        // Combined header + controls panel (fixed height, auto sized by contents)
+        egui::TopBottomPanel::top("controls_panel").show(ctx, |ui| {
+            ui.horizontal(|ui| { self.header.ui(ui, &mut self.settings_open); });
+            ui.add_space(4.0);
+
+            // URL row
             ui.horizontal(|ui| {
-                self.header.ui(ui, &mut self.settings_open);
+                let avail = ui.available_width();
+                let spacing = ui.spacing().item_spacing.x;
+                let label_w = (avail * 0.20).min(160.0).max(80.0);
+                let btn_w = (avail * 0.18).min(120.0).max(80.0);
+                let input_w = (avail - label_w - btn_w - spacing * 2.0).max(80.0);
+                ui.add_sized(egui::vec2(label_w, 24.0), egui::Label::new("Torrent URL:"));
+                ui.add_sized(egui::vec2(input_w, 24.0), egui::widgets::TextEdit::singleline(&mut self.ui_state.url));
+                if ui.add_sized(egui::vec2(btn_w, 30.0), egui::widgets::Button::new("Load").fill(Color32::from_rgb(70,130,180))).clicked() {}
             });
 
-            ui.add_space(10.0);
-
-            // Main content: left is main area, right is optional settings side panel
+            ui.add_space(4.0);
+            // Folder row
             ui.horizontal(|ui| {
-                // Left: primary area - takes most space
-                ui.vertical(|ui| {
-                            // Layout the input row as three columns with equal flex
-                            ui.horizontal(|ui| {
-                                let avail = ui.available_width();
-                                // three equal parts: label, input, button
-                                let part = (avail - 24.0) / 3.0; // small padding
-                                ui.add_sized(egui::vec2(part, 24.0), egui::Label::new("Torrent URL:"));
-                                ui.add(egui::widgets::TextEdit::singleline(&mut self.ui_state.url).desired_width(part));
-                                if ui.add_sized(egui::vec2(part, 30.0), egui::widgets::Button::new("Load").fill(Color32::from_rgb(70,130,180))).clicked() {
-                                }
-                            });
-
-                    ui.add_space(6.0);
-
-                    ui.horizontal(|ui| {
-                        let avail = ui.available_width();
-                        let part = (avail - 24.0) / 3.0;
-                        ui.add_sized(egui::vec2(part, 24.0), egui::Label::new("Download Folder:"));
-                        ui.add(egui::widgets::TextEdit::singleline(&mut self.ui_state.folder).desired_width(part));
-                        if ui.add_sized(egui::vec2(part, 30.0), egui::widgets::Button::new("Browse").fill(Color32::from_rgb(100,160,100))).clicked() {
-                            if let Some(folder) = FileDialog::new().pick_folder() {
-                                self.ui_state.folder = folder.display().to_string();
-                                self.file_graph.build_from_path(std::path::Path::new(&self.ui_state.folder));
-                            }
-                        }
-                    });
-
-                    ui.add_space(12.0);
-
-                    // Four wide action buttons, evenly spaced
-                    // Use egui Columns to ensure buttons are evenly sized and respect padding.
-                    let cols = ui.columns(4, |columns| {
-                        columns[0].add(egui::widgets::Button::new(RichText::new("Check for updates").strong()).fill(Color32::from_rgb(75,135,185)).min_size(egui::vec2(0.0,36.0)));
-                        columns[1].add(egui::widgets::Button::new(RichText::new("Check").strong()).fill(Color32::from_rgb(190,120,90)).min_size(egui::vec2(0.0,36.0)));
-                        columns[2].add(egui::widgets::Button::new(RichText::new("Launch").strong()).fill(Color32::from_rgb(120,200,140)).min_size(egui::vec2(0.0,36.0)));
-                        columns[3].add(egui::widgets::Button::new(RichText::new("Join").strong()).fill(Color32::from_rgb(200,160,80)).min_size(egui::vec2(0.0,36.0)));
-                    });
-
-                    // Trigger clicks from columns (each returns response)
-                    // We intentionally don't over-engineer actions here; keep as no-op placeholders.
-
-                    ui.add_space(12.0);
-
-                    // Graph area: reserved and renders file graph
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        let remaining = ui.available_height();
-                        ui.set_min_height(remaining.max(220.0));
-
-                        // draw graph via FileGraph
-                        self.file_graph.ui(ui);
-                    });
-                });
-
-                // Right: settings side panel as a popout
-                if self.settings_open {
-                    ui.add_space(8.0);
-                    egui::SidePanel::right("settings_side").default_width(360.0).show_inside(ui, |ui| {
-                        ui.vertical_centered(|ui| {
-                            ui.heading("Settings");
-                        });
-                        self.settings_panel.ui(ui);
-                    });
+                let avail = ui.available_width();
+                let spacing = ui.spacing().item_spacing.x;
+                let label_w = (avail * 0.20).min(160.0).max(80.0);
+                let btn_w = (avail * 0.18).min(120.0).max(80.0);
+                let input_w = (avail - label_w - btn_w - spacing * 2.0).max(80.0);
+                ui.add_sized(egui::vec2(label_w, 24.0), egui::Label::new("Download Folder:"));
+                ui.add_sized(egui::vec2(input_w, 24.0), egui::widgets::TextEdit::singleline(&mut self.ui_state.folder));
+                if ui.add_sized(egui::vec2(btn_w, 30.0), egui::widgets::Button::new("Browse").fill(Color32::from_rgb(100,160,100))).clicked() {
+                    if let Some(folder) = FileDialog::new().pick_folder() {
+                        self.ui_state.folder = folder.display().to_string();
+                        self.file_graph.build_from_path(std::path::Path::new(&self.ui_state.folder));
+                    }
                 }
+            });
+
+            ui.add_space(8.0);
+            // Action buttons
+            let avail_btn_w = ui.available_width();
+            let spacing = ui.spacing().item_spacing.x.max(6.0);
+            let btn_w = (avail_btn_w - spacing * 3.0).max(0.0) / 4.0;
+            ui.horizontal(|ui| {
+                ui.add_sized(egui::vec2(btn_w, 36.0), egui::widgets::Button::new(RichText::new("Check for updates").strong()).fill(Color32::from_rgb(75,135,185)));
+                ui.add_space(spacing);
+                ui.add_sized(egui::vec2(btn_w, 36.0), egui::widgets::Button::new(RichText::new("Check").strong()).fill(Color32::from_rgb(190,120,90)));
+                ui.add_space(spacing);
+                ui.add_sized(egui::vec2(btn_w, 36.0), egui::widgets::Button::new(RichText::new("Launch").strong()).fill(Color32::from_rgb(120,200,140)));
+                ui.add_space(spacing);
+                ui.add_sized(egui::vec2(btn_w, 36.0), egui::widgets::Button::new(RichText::new("Join").strong()).fill(Color32::from_rgb(200,160,80)));
+            });
+            ui.add_space(4.0);
+            ui.separator();
+        });
+
+        // Optional settings side panel (does not overlap central graph)
+        if self.settings_open {
+            egui::SidePanel::right("settings_side").resizable(true).default_width(360.0).show(ctx, |ui| {
+                ui.vertical_centered(|ui| { ui.heading("Settings"); });
+                ui.separator();
+                self.settings_panel.ui(ui);
+            });
+        }
+
+        // Central panel exclusively for the graph (auto fills remaining space)
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let avail = ui.available_size();
+            ui.set_min_size(avail); // ensure we claim all
+            egui::Frame::group(ui.style()).show(ui, |ui| {
+                let inner = ui.available_size();
+                ui.set_min_size(inner);
+                self.file_graph.ui(ui);
             });
         });
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(16));
+        // Request continuous repaint (immediate) so update() is called repeatedly.
+        ctx.request_repaint();
     }
 }
 
