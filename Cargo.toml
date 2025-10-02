@@ -15,6 +15,7 @@ chrono = "0.4.42"
 walkdir = "2.5.0"
 opener = "0.8.3"
 sha2 = "0.10.9"
+eframe = "0.32.3"
 
 [dev-dependencies]
 tempfile = "3.23.0"
