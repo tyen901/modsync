@@ -1,7 +1,7 @@
 // src/sync/torrent.rs
 
-use crate::config::AppConfig;
-use crate::ui::utils::SyncStatus;
+use super::types::SyncConfig;
+use crate::sync::status::SyncStatus;
 use crate::sync::messages::SyncEvent;
 use anyhow::{Context, Result};
 use librqbit::{AddTorrent, AddTorrentOptions};
@@ -12,7 +12,7 @@ use std::num::NonZeroU32;
 use super::utils::send_sync_status_event;
 
 pub async fn manage_torrent_task(
-    app_config: &AppConfig,
+    app_config: &SyncConfig,
     api: &librqbit::api::Api,
     ui_tx: &mpsc::UnboundedSender<SyncEvent>,
     current_id_to_forget: Option<usize>,
@@ -75,7 +75,7 @@ pub async fn manage_torrent_task(
     };
     
     let options = AddTorrentOptions {
-        output_folder: Some(app_config.download_path.to_string_lossy().into_owned()),
+    output_folder: Some(app_config.download_path.to_string_lossy().into_owned()),
         overwrite: true,
         paused: !app_config.should_seed,
         ratelimits,

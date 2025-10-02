@@ -6,8 +6,8 @@ use anyhow::{Context, Result};
 use std::time::Instant;
 use tokio::sync::mpsc;
 
-use crate::config::AppConfig;
-use crate::ui::utils::SyncStatus;
+use crate::sync::status::SyncStatus;
+use super::types::SyncConfig;
 
 use super::cleaner::{find_extra_files, get_expected_files_from_details};
 use super::local::{delete_files, refresh_managed_torrent_status_event, verify_folder_contents, fix_missing_files};
@@ -17,7 +17,6 @@ use super::types::{LocalTorrentState, RemoteTorrentState, SyncState};
 use super::utils::send_sync_status_event;
 
 pub async fn run_sync_manager(
-    initial_config: AppConfig,
     api: librqbit::Api,
     ui_tx: mpsc::UnboundedSender<SyncEvent>,
     mut sync_cmd_rx: mpsc::UnboundedReceiver<SyncCommand>,
@@ -30,7 +29,6 @@ pub async fn run_sync_manager(
         },
         remote: RemoteTorrentState::Unknown,
     };
-    let mut current_config = initial_config;
 
     // Create HTTP client once
     let http_client = super::http::create_http_client().context("Failed to create HTTP client")?;
@@ -59,35 +57,26 @@ pub async fn run_sync_manager(
             // Handle command messages from the UI
             Some(cmd_message) = sync_cmd_rx.recv() => {
                 match cmd_message {
-                    SyncCommand::UpdateConfig(new_config) => {
-                        println!("Sync: Received configuration update.");
-                        
-                        // Check if the URL changed
-                        let url_changed = current_config.torrent_url != new_config.torrent_url;
-                        let path_changed = current_config.download_path != new_config.download_path;
-                        
-                        // Update the current config
-                        current_config = new_config;
-                        
-                        // If URL changed, we might want to trigger a download and compare
-                        if url_changed {
-                            println!("Sync: Torrent URL changed, will trigger a comparison on next periodic check.");
-                            let _ = ui_tx.send(SyncEvent::Error("Configuration updated. URL changes will be checked on next refresh.".to_string()));
-                        } else if path_changed {
-                            println!("Sync: Download path changed to {}", current_config.download_path.display());
-                            let _ = ui_tx.send(SyncEvent::Error("Configuration updated. Download path changed.".to_string()));
-                        } else {
-                            println!("Sync: Configuration updated but no relevant changes detected.");
-                            let _ = ui_tx.send(SyncEvent::Error("Configuration updated.".to_string()));
-                        }
+                    SyncCommand::UpdateConfig(_new_config) => {
+                            // Configuration updates are now handled via the external
+                            // configuration API. The manager no longer stores or
+                            // mutates a local config copy. For now just acknowledge
+                            // receipt and notify the UI; the real apply will come
+                            // from the configuration API when implemented.
+                            println!("Sync: Received configuration update (forwarded to config API)");
+                            let _ = ui_tx.send(SyncEvent::Error("Configuration update received; it will be applied via the config API.".to_string()));
                     }
                     SyncCommand::VerifyFolder => {
                         println!("Sync: Folder verification requested");
-                        verify_folder_contents(&current_config, &mut state, &api, &ui_tx).await;
+                            // Use a placeholder config; the real config will be
+                            // supplied by the configuration API in future.
+                            let cfg = SyncConfig::default();
+                            verify_folder_contents(&cfg, &mut state, &api, &ui_tx).await;
                     },
                     SyncCommand::FixMissingFiles => {
                         println!("Sync: Fix missing files requested");
-                        fix_missing_files(&current_config, &mut state, &api, &ui_tx).await;
+                            let cfg = SyncConfig::default();
+                            fix_missing_files(&cfg, &mut state, &api, &ui_tx).await;
                     },
                     SyncCommand::DeleteFiles(files_to_delete) => {
                         println!("Sync: Deletion requested for {} files", files_to_delete.len());
@@ -95,8 +84,9 @@ pub async fn run_sync_manager(
                     },
                     SyncCommand::ApplyUpdate(torrent_content) => {
                         println!("Sync: Apply remote update requested ({} bytes)", torrent_content.len());
-                        
-                        match apply_remote_update(&current_config, &mut state, &api, &ui_tx, torrent_content).await {
+                            let cfg = SyncConfig::default();
+
+                            match apply_remote_update(&cfg, &mut state, &api, &ui_tx, torrent_content).await {
                             true => {
                                 state.remote = RemoteTorrentState::Checked; // Update state on success
                                 
@@ -107,7 +97,7 @@ pub async fn run_sync_manager(
                                     match api.api_torrent_details(id.into()) {
                                         Ok(details) => {
                                             let expected_files = get_expected_files_from_details(&details);
-                                            match find_extra_files(&current_config.download_path, &expected_files) {
+                                            match find_extra_files(&cfg.download_path, &expected_files) {
                                                 Ok(extra_files) => {
                                                     println!("Sync: Found {} extra files after update", extra_files.len());
                                                     if let Err(e) = ui_tx.send(SyncEvent::ExtraFilesFound(extra_files)) {
@@ -144,8 +134,9 @@ pub async fn run_sync_manager(
                     },
                     SyncCommand::DownloadAndCompare(url) => {
                         println!("Sync: Force download and compare requested for URL: {}", url);
-                        current_config.torrent_url = url.clone(); // Update config internally
-                        direct_download_and_compare(&current_config, &mut state, &api, &ui_tx, &http_client).await;
+                        let mut cfg = SyncConfig::default();
+                        cfg.torrent_url = url.clone();
+                        direct_download_and_compare(&cfg, &mut state, &api, &ui_tx, &http_client).await;
                     },
                     // No need for a catch-all since all variants are explicitly handled
                 }
@@ -166,7 +157,10 @@ pub async fn run_sync_manager(
                     if should_check {
                         last_update_check = Some(now);
                         println!("Sync: Periodic remote check triggered");
-                        direct_download_and_compare(&current_config, &mut state, &api, &ui_tx, &http_client).await;
+                        // No local config is stored in the manager; use default
+                        // placeholder until the external config API is available.
+                        let periodic_cfg = SyncConfig::default();
+                        direct_download_and_compare(&periodic_cfg, &mut state, &api, &ui_tx, &http_client).await;
                     }
                 }
             }

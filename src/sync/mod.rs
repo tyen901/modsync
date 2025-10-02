@@ -1,6 +1,7 @@
 pub mod http;
 pub mod cleaner;
 pub mod torrent;
+pub mod status;
 pub mod messages;
 pub mod types;
 pub mod utils;

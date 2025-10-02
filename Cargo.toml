@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-eframe = "0.32.3"
 librqbit = "8.1.1"
 tokio = { version = "1.47.1", features = ["full"] }
 anyhow = "1.0.100"

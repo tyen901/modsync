@@ -1,11 +1,10 @@
 //! Operations related to the remote torrent state
 
-use crate::config::AppConfig;
+use super::types::SyncConfig;
 use reqwest;
 use tokio::sync::mpsc;
 
-use crate::config::get_cached_torrent_path;
-use crate::ui::utils::SyncStatus;
+use crate::sync::status::SyncStatus;
 
 use super::local::refresh_managed_torrent_status_event;
 use super::messages::SyncEvent;
@@ -14,7 +13,7 @@ use super::utils::{download_torrent, calculate_torrent_hash, get_local_torrent_h
 use super::manage_torrent_task;
 
 pub async fn apply_remote_update(
-    config: &AppConfig,
+    config: &SyncConfig,
     state: &mut SyncState,
     api: &librqbit::Api,
     ui_tx: &mpsc::UnboundedSender<SyncEvent>,
@@ -63,7 +62,7 @@ pub async fn apply_remote_update(
 }
 
 pub async fn direct_download_and_compare(
-    config: &AppConfig,
+    config: &SyncConfig,
     state: &mut SyncState,
     _api: &librqbit::Api,
     ui_tx: &mpsc::UnboundedSender<SyncEvent>,
@@ -91,7 +90,7 @@ pub async fn direct_download_and_compare(
             let remote_hash = calculate_torrent_hash(&remote_torrent);
             println!("Sync: Remote torrent hash: {}", remote_hash);
 
-            let local_hash_result = get_local_torrent_hash().await;
+            let local_hash_result = get_local_torrent_hash(config.cached_torrent_path.clone()).await;
 
             match local_hash_result {
                 Ok(Some(local_hash)) => {
@@ -102,25 +101,17 @@ pub async fn direct_download_and_compare(
                             "Sync: Torrent has changed! Remote hash different from local hash."
                         );
 
-                        if let Ok(cache_path) = get_cached_torrent_path() {
-                            println!(
-                                "Sync: Saving updated torrent to cache: {}",
-                                cache_path.display()
-                            );
+                        if let Some(cache_path) = &config.cached_torrent_path {
+                            println!("Sync: Writing downloaded torrent to cache: {}", cache_path.display());
                             if let Err(e) = tokio::fs::write(&cache_path, &remote_torrent).await {
-                                eprintln!(
-                                    "Sync: WARNING - Failed to write to cache file {}: {}",
-                                    cache_path.display(),
-                                    e
-                                );
+                                eprintln!("Sync: Failed to write cached torrent file: {}", e);
                             }
                         }
 
                         state.remote = RemoteTorrentState::UpdateAvailable;
 
                         if let Err(e) = ui_tx.send(SyncEvent::RemoteUpdateFound(remote_torrent)) {
-                            let err_msg =
-                                format!("Failed to send update notification to UI: {}", e);
+                            let err_msg = format!("Failed to send update notification to UI: {}", e);
                             eprintln!("Sync: {}", err_msg);
                             send_sync_status_event(ui_tx, SyncStatus::Error(err_msg));
                         } else {
@@ -134,17 +125,10 @@ pub async fn direct_download_and_compare(
                 Ok(None) => {
                     println!("Sync: No local torrent found. This is a new torrent.");
 
-                    if let Ok(cache_path) = get_cached_torrent_path() {
-                        println!(
-                            "Sync: Saving new torrent to cache: {}",
-                            cache_path.display()
-                        );
+                    if let Some(cache_path) = &config.cached_torrent_path {
+                        println!("Sync: Writing downloaded torrent to cache: {}", cache_path.display());
                         if let Err(e) = tokio::fs::write(&cache_path, &remote_torrent).await {
-                            eprintln!(
-                                "Sync: WARNING - Failed to write to cache file {}: {}",
-                                cache_path.display(),
-                                e
-                            );
+                            eprintln!("Sync: Failed to write cached torrent file: {}", e);
                         }
                     }
 

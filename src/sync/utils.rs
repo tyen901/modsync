@@ -2,9 +2,9 @@ use anyhow::{Context, Result, anyhow};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
 
-use crate::config::get_cached_torrent_path;
-use crate::ui::utils::SyncStatus;
+use crate::sync::status::SyncStatus;
 use super::messages::SyncEvent;
+use std::path::PathBuf;
 
 pub fn send_sync_event(tx: &mpsc::UnboundedSender<SyncEvent>, event: SyncEvent) {
     if let Err(e) = tx.send(event) {
@@ -44,8 +44,17 @@ pub fn calculate_torrent_hash(data: &[u8]) -> String {
     format!("{:x}", result)
 }
 
-pub async fn get_local_torrent_hash() -> Result<Option<String>> {
-    let cache_path = get_cached_torrent_path()?;
+/// If `cached_path` is None, the function returns Ok(None) to indicate
+/// no local cached torrent is available. The caller is responsible for
+/// providing a path if they want local cache checks.
+pub async fn get_local_torrent_hash(cached_path: Option<PathBuf>) -> Result<Option<String>> {
+    let cache_path = match cached_path {
+        Some(p) => p,
+        None => {
+            println!("Sync: No local torrent cache path supplied");
+            return Ok(None);
+        }
+    };
 
     if !cache_path.exists() {
         println!(

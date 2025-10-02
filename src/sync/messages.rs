@@ -1,12 +1,12 @@
-use crate::config::AppConfig;
-use crate::ui::utils::SyncStatus;
+use super::types::SyncConfig;
+use crate::sync::status::SyncStatus;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::collections::HashSet;
 
 #[derive(Debug)]
 pub enum SyncCommand {
-    UpdateConfig(AppConfig),
+    UpdateConfig(SyncConfig),
     VerifyFolder,
     DeleteFiles(Vec<PathBuf>),
     ApplyUpdate(Vec<u8>),
