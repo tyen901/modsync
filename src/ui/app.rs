@@ -18,6 +18,7 @@ pub struct ModApp {
     header: Header,
     ui_state: UiState,
     settings_open: bool,
+    torrent_progress: crate::ui::torrent_progress::TorrentProgress,
 }
 
 impl Default for ModApp {
@@ -28,6 +29,7 @@ impl Default for ModApp {
             header: Header::default(),
             ui_state: UiState { url: String::new(), folder: String::from("downloads") },
             settings_open: false,
+            torrent_progress: crate::ui::torrent_progress::TorrentProgress::new(),
         }
     }
 }
@@ -116,8 +118,9 @@ impl App for ModApp {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 let inner = ui.available_size();
                 ui.set_min_size(inner);
+                let desired = egui::Vec2::new(inner.x * 0.9, 120.0);
                 ui.centered_and_justified(|ui| {
-                    ui.label("File graph removed");
+                    self.torrent_progress.ui(ui, desired);
                 });
             });
         });
@@ -127,4 +130,16 @@ impl App for ModApp {
     }
 }
 
-impl ModApp {}
+impl ModApp {
+    /// Accept managed torrent updates from the sync layer.
+    ///
+    /// The sync layer will call this with Some((id, Arc<TorrentStats>)) to push stats,
+    /// or None to reset/clear the display.
+    pub fn on_managed_torrent_update(&mut self, stats_opt: Option<(usize, std::sync::Arc<librqbit::TorrentStats>)>) {
+        if let Some((_id, stats)) = stats_opt {
+            self.torrent_progress.update_from_stats(&stats);
+        } else {
+            self.torrent_progress = crate::ui::torrent_progress::TorrentProgress::new();
+        }
+    }
+}

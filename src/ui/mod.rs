@@ -1,8 +1,9 @@
 pub mod header;
 pub mod settings_panel;
+pub mod torrent_progress;
 pub mod app;
 pub use app::ModApp;
-
+ 
 /// Run the native UI by building the app
 pub fn run_ui() {
     let native_options = eframe::NativeOptions::default();
