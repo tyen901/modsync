@@ -30,6 +30,15 @@ impl TorrentProgress {
         self.last_update = Instant::now();
     }
 
+    /// Temporary helper used by the UI demo: directly set internal fields from
+    /// simulated values without requiring a full `TorrentStats` instance.
+    pub fn update_from_simulated(&mut self, file_progress: Vec<u64>, progress_bytes: u64, total_bytes: u64) {
+        self.file_progress = file_progress;
+        self.progress_bytes = progress_bytes;
+        self.total_bytes = total_bytes;
+        self.last_update = Instant::now();
+    }
+
     /// Render the widget into the provided `ui` using the requested `desired_size`.
     ///
     /// Behavior:
@@ -52,12 +61,21 @@ impl TorrentProgress {
             human_readable_bytes(self.progress_bytes),
             human_readable_bytes(self.total_bytes)
         );
+
+        // Reserve the header area first so the caller can provide the full
+        // desired_size (header + bar). Use a small header height to keep layout stable.
+        let header_height: f32 = 20.0;
         ui.horizontal(|ui| {
+            ui.set_min_size(egui::vec2(desired_size.x, header_height));
             ui.label(header_text);
         });
 
-        // Allocate a fixed area for the bar and get the painter
-    let (rect, _alloc_resp) = ui.allocate_exact_size(desired_size, egui::Sense::hover());
+        // Compute bar area from desired_size minus header
+    let bar_height = (desired_size.y - header_height).max(8.0);
+    let bar_size = Vec2::new(desired_size.x, bar_height);
+
+    // Allocate exact size for the bar and get the painter
+    let (rect, _alloc_resp) = ui.allocate_exact_size(bar_size, egui::Sense::hover());
     let painter = ui.painter();
 
     // Background bar (rounded corners)
@@ -65,7 +83,7 @@ impl TorrentProgress {
     let bar_fill = Color32::from_rgb(30, 30, 30);
     painter.rect_filled(rect, CornerRadius::same(bar_radius), bar_fill);
 
-        // Nothing to render if there are no files
+        // Draw nothing else if there are no files (header still shown)
         let files = &self.file_progress;
         let n_files = files.len();
         if n_files == 0 {
@@ -134,7 +152,6 @@ impl TorrentProgress {
         }
     }
 }
-
 /// Simple helper to format bytes in KiB/MiB/GiB with two decimal places.
 fn human_readable_bytes(b: u64) -> String {
     let b_f = b as f64;
