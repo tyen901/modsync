@@ -1,7 +1,6 @@
 pub mod header;
 pub mod settings_panel;
 pub mod app;
-pub mod file_graph;
 pub use app::ModApp;
 
 /// Run the native UI by building the app

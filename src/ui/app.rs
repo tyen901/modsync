@@ -4,10 +4,7 @@ use std::time::Instant;
 
 use crate::ui::header::Header;
 use crate::ui::settings_panel::SettingsPanel;
-use crate::ui::file_graph::FileGraph;
 use rfd::FileDialog;
-
-// graph libs
 
 // UI-local state
 struct UiState {
@@ -21,8 +18,6 @@ pub struct ModApp {
     header: Header,
     ui_state: UiState,
     settings_open: bool,
-    // graph data
-    file_graph: FileGraph,
 }
 
 impl Default for ModApp {
@@ -33,7 +28,6 @@ impl Default for ModApp {
             header: Header::default(),
             ui_state: UiState { url: String::new(), folder: String::from("downloads") },
             settings_open: false,
-            file_graph: FileGraph::new(),
         }
     }
 }
@@ -84,7 +78,6 @@ impl App for ModApp {
                 if ui.add_sized(egui::vec2(btn_w, 30.0), egui::widgets::Button::new("Browse").fill(Color32::from_rgb(100,160,100))).clicked() {
                     if let Some(folder) = FileDialog::new().pick_folder() {
                         self.ui_state.folder = folder.display().to_string();
-                        self.file_graph.build_from_path(std::path::Path::new(&self.ui_state.folder));
                     }
                 }
             });
@@ -123,7 +116,9 @@ impl App for ModApp {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 let inner = ui.available_size();
                 ui.set_min_size(inner);
-                self.file_graph.ui(ui);
+                ui.centered_and_justified(|ui| {
+                    ui.label("File graph removed");
+                });
             });
         });
 
